@@ -1,0 +1,1131 @@
+*&---------------------------------------------------------------------*
+*& Report ZMMU_SERNO_DELINK
+*----------------------------------------------------------------------*
+*  Program Title        : Serial No Delinking                          *
+*  Author               : MDONBOSCOUST                                 *
+*  Date                 : 05/06/2025                                   *
+*  Transport            : DEVK9A6TJG                                   *
+*  Description          : Serial Number Delinking process for Returns  *
+*----------------------------------------------------------------------*
+*  MODIFICATION HISTORY                                                *
+*----------------------------------------------------------------------*
+*Report will fetch data based on SO or STO or MATNR-SERNR combination.
+*Based on the Selection screen entreis, it will fectch details to Delink
+*User can select one or multiple serial numbers, upon posting/save the
+*serial number delinking will be done in the background and user will
+*be presented with a success screen.
+REPORT zmm_returns_serno_delink MESSAGE-ID zsci_errorlog.
+
+INCLUDE zmm_returns_serno_delink_top.
+
+INCLUDE zmm_returns_serno_delink_form.
+
+AT SELECTION-SCREEN OUTPUT.
+  PERFORM modify_screen.
+
+AT SELECTION-SCREEN.
+  PERFORM field_validation.
+
+START-OF-SELECTION.
+AUTHORITY-CHECK OBJECT 'C_COCF_SRE'
+              FOR USER sy-uname
+              ID 'ACTVT'      FIELD '02'
+              ID 'EQUNR'      DUMMY.
+IF sy-subrc is INITIAL.
+  PERFORM main_process.
+else.
+  MESSAGE I129(ZSC1).
+ENDIF.
+
+
+
+*&---------------------------------------------------------------------*
+*& Include          ZMMU_SERNO_DELINK_TOP
+*&---------------------------------------------------------------------*
+TABLES: vbap, ekpo, mara, zsc_z3s_woserial ,zmm_grt_sno_dlst.
+
+SELECTION-SCREEN: BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-000.
+
+PARAMETERS: p_so TYPE c RADIOBUTTON GROUP g1 DEFAULT 'X' MODIF ID 0 USER-COMMAND uc1.
+SELECTION-SCREEN: BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-006.
+SELECT-OPTIONS: s_vbeln  FOR vbap-vbelv NO INTERVALS  MODIF ID 1,
+                s_posnr  FOR vbap-posnr NO INTERVALS  MODIF ID 1.
+SELECTION-SCREEN: END OF BLOCK b2.
+
+PARAMETERS: p_sto TYPE c RADIOBUTTON GROUP g1 MODIF ID 0.
+SELECTION-SCREEN: BEGIN OF BLOCK b3 WITH FRAME TITLE TEXT-007.
+SELECT-OPTIONS: s_ebeln  FOR ekpo-ebeln NO INTERVALS  MODIF ID 2,
+                s_ebelp  FOR ekpo-ebelp NO INTERVALS  MODIF ID 2.
+SELECTION-SCREEN: END OF BLOCK b3.
+
+PARAMETERS: p_matnr TYPE c RADIOBUTTON GROUP g1 MODIF ID 0.
+SELECTION-SCREEN: BEGIN OF BLOCK b4 WITH FRAME TITLE TEXT-008.
+SELECT-OPTIONS: s_matnr  FOR mara-matnr NO INTERVALS  MODIF ID 3,
+                s_sernr  FOR zsc_z3s_woserial-serialno NO INTERVALS  MODIF ID 3.
+SELECTION-SCREEN: END OF BLOCK b4.
+
+SELECTION-SCREEN: END OF BLOCK b1.
+
+TYPES: BEGIN OF ty_init,
+         check TYPE char1,
+         matnr TYPE matnr,
+         sernr TYPE gernr,
+         vbeln TYPE vbeln,
+         posnr TYPE posnr,
+         equnr TYPE equnr,
+         cstat TYPE char100,   " Current Status
+       END OF ty_init.
+TYPES: BEGIN OF ty_final,
+         matnr TYPE matnr,
+         sernr TYPE gernr,
+         vbeln TYPE vbeln,
+         posnr TYPE posnr,
+         cstat TYPE char100, " Previous Status
+         fstat TYPE j_txt30, " Current Status
+       END OF ty_final.
+TYPES: BEGIN OF ty_equi,
+         equnr TYPE equnr,
+         objnr TYPE j_objnr,
+         matnr TYPE matnr,
+         sernr TYPE gernr,
+         stat  TYPE j_status,
+         inact TYPE j_inact,
+         chgnr TYPE j_chgnr, "Newly added
+       END OF ty_equi.
+
+TYPES: BEGIN OF ty_so,
+         vbeln TYPE vbeln_va,
+         vbtyp TYPE vbtypl,
+       END OF ty_so.
+
+TYPES: BEGIN OF ty_so_obd,
+         r_vbeln_vl  TYPE vbeln_vl,
+         fw_vbeln_va TYPE vbeln_va,
+         re_vbeln_va TYPE vbeln_va,
+         kunnr       TYPE kunnr,
+         rrc_partner TYPE kunnr,
+       END OF ty_so_obd.
+
+TYPES: BEGIN OF ty_ser,
+         sernr TYPE gernr,
+         matnr TYPE matnr,
+         posnr TYPE posnr_vl,
+         equnr TYPE equnr,
+       END OF ty_ser.
+
+TYPES :BEGIN OF ty_delivery,
+         vbeln TYPE vbeln_vl,
+         posnn TYPE posnr_nach,
+       END OF ty_delivery.
+
+DATA: gt_equi  TYPE TABLE OF ty_equi,     " Status details
+      gt_init  TYPE TABLE OF ty_init,     " Inital ALV
+      gt_final TYPE TABLE OF ty_final.    " FInal ALV
+
+DATA: lt_delivery_ibd TYPE TABLE OF ty_delivery,
+      lt_lief_nr      TYPE TABLE OF ty_delivery,
+      ls_lief_nr      LIKE LINE OF lt_lief_nr,
+      lt_delivery_obd TYPE TABLE OF ty_delivery.
+
+DATA: lt_serno    TYPE TABLE OF ty_ser.
+
+DATA: gt_delink        TYPE TABLE OF zmm_grt_sno_dlst,
+      gs_delink        LIKE LINE OF gt_delink,
+      gt_delink_update TYPE TABLE OF zmm_grt_sno_dlst,
+      gt_delink_insert TYPE TABLE OF zmm_grt_sno_dlst.
+
+
+*&---------------------------------------------------------------------*
+*& Include          ZMM_RETURNS_SERNO_DELINK_FORM
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Form GET_OUTPUT_DATA
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM main_process.
+
+  DATA:lt_equi_c  TYPE TABLE OF ty_equi,
+       ls_equi_c  LIKE LINE OF lt_equi_c,
+
+       ls_serno   TYPE ty_ser,
+       lt_serno_c TYPE TABLE OF ty_ser,
+
+       ls_serno_c TYPE ty_ser.
+
+
+  PERFORM init_variables.
+
+  "--- Fetch OBD Deliveries ---
+  IF s_vbeln IS NOT INITIAL .
+
+    SELECT vbeln,posnn
+      FROM zcd1_sd_doc_flow INTO TABLE @lt_delivery_obd
+      WHERE  vbelv IN @s_vbeln AND posnv IN @s_posnr
+        AND vbtyp_n = 'T'.
+
+    IF sy-subrc = 0.
+      DATA(lt_delivery) = lt_delivery_obd.
+      SORT lt_delivery BY vbeln posnn.
+      DELETE ADJACENT DUPLICATES FROM lt_delivery.
+    ENDIF.
+  ENDIF.
+
+  "----Fetch forward sales order using material and serial number ---
+  IF s_matnr IS NOT INITIAL AND s_sernr IS NOT INITIAL.
+
+    SELECT a~matnr ,a~sernr , a~equnr  INTO TABLE @DATA(lt_ser)
+      FROM m_equio AS a
+      INNER JOIN objk AS b ON
+      b~equnr = a~equnr AND
+      b~matnr = a~matnr AND
+      b~sernr = a~sernr
+      INNER JOIN ser01  AS c ON
+      c~obknr = b~obknr
+      WHERE a~matnr IN @s_matnr AND a~sernr IN @s_sernr.
+
+    IF sy-subrc = 0.
+      DATA(lt_serial_no) = lt_ser.
+      SORT lt_serial_no BY matnr sernr equnr .
+      DELETE ADJACENT DUPLICATES FROM lt_serial_no COMPARING matnr sernr equnr.
+      LOOP AT lt_serial_no INTO DATA(ls_ser).
+        ls_serno-matnr = ls_ser-matnr.
+        ls_serno-sernr = ls_ser-sernr.
+        ls_serno-equnr = ls_ser-equnr.
+        APPEND ls_serno TO lt_serno.
+      ENDLOOP.
+    ENDIF.
+  ENDIF.
+
+  "--- Fetch IBD Deliveries ---
+  IF s_ebeln IS NOT INITIAL .
+    SELECT ekes~deliverydocument AS vbeln ,ekes~deliverydocumentitem AS vbelp
+      FROM i_purgdocsupplierconfirmation AS ekes INTO TABLE @lt_delivery_ibd
+      WHERE ekes~purchasingdocument IN @s_ebeln
+         AND ekes~purchasingdocumentitem IN @s_ebelp. "#EC CI_NO_TRANSFORM
+
+    IF sy-subrc = 0.
+      lt_delivery = lt_delivery_ibd.
+      SORT lt_delivery BY vbeln posnn.
+      DELETE ADJACENT DUPLICATES FROM lt_delivery.
+    ENDIF.
+
+    IF lt_delivery_ibd IS NOT INITIAL.
+
+      SELECT DISTINCT ekko~purchasingdocument         AS ebeln,  "Purchasing Document Number
+                      ekkn~purchasingdocumentitem     AS ebelp,  "Item Number of Purchasing Document
+                      ekkn~salesdocument              AS vbeln,  "Sales Document
+                      ekkn~salesdocumentitem          AS vbelp,  "Item number of the SD document
+                      ekko~correspncexternalreference AS ihrez,  "Return SO Number
+                      ekko~correspncinternalreference AS unsez,  "OBD number
+                      ekpo~plant                      AS werks,  "Plant
+                      ekpo~material                   AS matnr,   "Material
+                      ekes~deliverydocument           AS deli
+      FROM zsc_cds_del_item  AS lips
+      INNER JOIN i_purchasingdocument AS ekko ON
+                 ekko~purchasingdocument = lips~vgbel
+      INNER JOIN i_purdocacctassinment AS ekkn ON
+                 ekkn~purchasingdocument = ekko~purchasingdocument
+      INNER JOIN i_purchasingdocumentitem AS ekpo ON
+                 ekpo~purchasingdocument = ekko~purchasingdocument
+      INNER JOIN i_salesdocumentitembasic AS vbap ON
+                 vbap~salesdocument = ekkn~salesdocument AND
+                 vbap~salesdocumentitem = ekkn~salesdocumentitem AND
+                 vbap~material = ekpo~material
+      INNER JOIN i_purgdocsupplierconfirmation AS ekes ON
+                 ekes~purchasingdocument = ekko~purchasingdocument
+      FOR ALL ENTRIES IN @lt_delivery_ibd
+      WHERE lips~vbeln = @lt_delivery_ibd-vbeln
+      INTO TABLE @DATA(lt_msg).                    "#EC CI_NO_TRANSFORM
+    ENDIF.
+  ENDIF.
+
+  "--- Serial number fetch
+  IF lt_delivery IS NOT INITIAL.
+
+    SELECT FROM ser01
+      INNER JOIN objk ON ser01~obknr = objk~obknr
+           FIELDS objk~sernr, objk~matnr, ser01~posnr, objk~equnr
+      FOR ALL ENTRIES IN @lt_delivery
+     WHERE ser01~lief_nr = @lt_delivery-vbeln
+      AND  ser01~posnr = @lt_delivery-posnn
+      INTO TABLE @lt_serno.
+    IF sy-subrc NE 0.
+*Do Nothing.
+    ENDIF.
+    IF s_ebeln IS NOT INITIAL.
+
+      LOOP AT lt_msg INTO DATA(ls_msg).
+        ls_lief_nr = ls_msg-unsez.
+        APPEND ls_lief_nr TO lt_lief_nr.
+      ENDLOOP.
+
+      "Fetch serial number details from OBD(STO)
+      IF lt_lief_nr IS NOT INITIAL.
+        SELECT FROM ser01 INNER JOIN objk ON
+                   ser01~obknr = objk~obknr
+            FIELDS objk~sernr, objk~matnr, ser01~posnr, objk~equnr FOR ALL ENTRIES IN @lt_lief_nr WHERE lief_nr =  @lt_lief_nr-vbeln
+            APPENDING TABLE @lt_serno.
+      ENDIF.
+    ENDIF.
+
+    IF lt_serno IS NOT INITIAL.
+      DATA(lt_delivery_serial) = lt_serno.
+      SORT lt_delivery_serial BY sernr matnr posnr equnr.
+      DELETE ADJACENT DUPLICATES FROM lt_delivery_serial COMPARING sernr matnr posnr equnr.
+      lt_serno = lt_delivery_serial.
+    ENDIF.
+
+  ENDIF.
+
+  IF lt_serno IS NOT INITIAL.
+    SORT lt_serno BY matnr sernr.
+
+    SELECT  a~equipment             AS equnr,
+            a~maintobjectinternalid AS objnr,
+            a~material              AS matnr,
+            a~serialnumber          AS sernr,
+            b~statuscode            AS stat,
+            b~statusisinactive      AS inact
+      FROM i_equipment AS a INNER JOIN i_statusobjectstatusbasic AS b
+      ON b~statusobject = a~maintobjectinternalid
+      INTO TABLE @gt_equi
+      FOR ALL ENTRIES IN @lt_serno
+      WHERE a~material = @lt_serno-matnr AND
+            a~serialnumber = @lt_serno-sernr AND
+            b~statusisinactive = @abap_false.
+
+    IF sy-subrc = 0.
+      "Child equipment details
+      SELECT
+        a~equipment              AS equnr, " Child Equipment Number
+        a~maintobjectinternalid  AS objnr, " Object number
+        a~serialnumber           AS sernr, " Serial Number
+        a~material               AS matnr, " Material Number
+        b~superordinateequipment AS hequi, "Superordinate Equipment
+        j~statuscode             AS stat,  " Object status
+        j~statusisinactive       AS inact  " Indicator: Status Is Inactive
+        INTO TABLE @DATA(lt_equi2)
+        FROM i_equipment AS a
+        INNER JOIN i_equipmenttimeseg AS b ON a~equipment = b~equipment         " Get child equipment
+        INNER JOIN i_statusobjectstatusbasic AS j ON j~statusobject = a~maintobjectinternalid           " Status for child
+        FOR ALL ENTRIES IN @gt_equi
+        WHERE b~superordinateequipment = @gt_equi-equnr. "#EC CI_NO_TRANSFORM
+
+      IF sy-subrc = 0 AND ( s_vbeln IS NOT INITIAL OR s_ebeln IS NOT INITIAL ).
+        IF lt_equi2 IS NOT INITIAL .
+          SORT gt_equi BY sernr matnr.
+          SORT lt_equi2 BY sernr matnr hequi.
+          "combing gt_delink parent with lt_equi2 serial number and material number
+          LOOP AT  lt_serno ASSIGNING FIELD-SYMBOL(<fs_serno>).
+            APPEND <fs_serno> TO lt_serno_c.
+            READ TABLE gt_equi WITH KEY equnr = <fs_serno>-equnr INTO DATA(ls_equi).
+            IF sy-subrc = 0.
+              "Adding both parent and child equipment into lt_equi_c
+              LOOP AT gt_equi INTO DATA(ls_equi1) WHERE matnr = ls_equi-matnr AND sernr = ls_equi-sernr .
+                APPEND ls_equi1 TO lt_equi_c.
+              ENDLOOP.
+              LOOP AT lt_equi2 ASSIGNING FIELD-SYMBOL(<fs_equi2>) WHERE hequi = ls_equi-equnr.
+
+                ls_equi_c-equnr = <fs_equi2>-equnr.
+                ls_equi_c-objnr = <fs_equi2>-objnr.
+                ls_equi_c-sernr = <fs_equi2>-sernr.
+                ls_equi_c-matnr = <fs_equi2>-matnr.
+                ls_equi_c-stat  = <fs_equi2>-stat.
+                ls_equi_c-inact = <fs_equi2>-inact.
+                APPEND ls_equi_c TO lt_equi_c.
+
+                AT NEW equnr ##LOOP_AT_OK.
+                  ls_serno_c-sernr = <fs_equi2>-sernr.
+                  ls_serno_c-matnr = <fs_equi2>-matnr.
+                  ls_serno_c-equnr = <fs_equi2>-equnr.
+                  APPEND ls_serno_c TO lt_serno_c.
+                ENDAT.
+
+              ENDLOOP.
+            ENDIF.
+          ENDLOOP.
+
+          "LT_EQUI_C has both parent and child equipments and gt_equi has only parent
+          gt_equi = COND #( WHEN lt_equi_c IS NOT INITIAL
+                               THEN lt_equi_c ELSE
+                               gt_equi ).
+          lt_serno = COND #( WHEN lt_serno_c IS NOT INITIAL
+                               THEN lt_serno_c ELSE
+                               lt_serno ).
+
+          SORT gt_equi BY sernr matnr.
+          SORT lt_serno BY sernr matnr.
+
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    SELECT systemstatus AS istat, systemstatusshortname AS txt04
+      FROM i_systemstatustext
+      INTO TABLE @DATA(lt_tj02t)
+      WHERE language = @sy-langu.
+    SELECT userstatus AS estat, userstatusshortname AS txt04
+      FROM i_userstatustext
+      APPENDING TABLE @lt_tj02t
+     WHERE statusprofile = 'HPE001'
+       AND language = @sy-langu.
+    IF sy-subrc = 0.
+      SORT lt_tj02t BY istat.
+    ENDIF.
+    SORT gt_equi BY stat DESCENDING.
+    LOOP AT lt_serno ASSIGNING FIELD-SYMBOL(<ls_serno>).
+      APPEND INITIAL LINE TO gt_init ASSIGNING FIELD-SYMBOL(<ls_init>).
+      <ls_init>-matnr = <ls_serno>-matnr.
+      <ls_init>-sernr = <ls_serno>-sernr.
+      <ls_init>-vbeln = s_vbeln-low.
+      IF s_posnr IS NOT INITIAL.
+        <ls_init>-posnr = s_posnr-low.
+      ELSE.
+        IF s_vbeln IS NOT INITIAL.
+          <ls_init>-posnr = <ls_serno>-posnr.
+        ENDIF.
+      ENDIF.
+      <ls_init>-equnr = <ls_serno>-equnr.
+
+      LOOP AT gt_equi ASSIGNING FIELD-SYMBOL(<ls_equi1>) WHERE sernr = <ls_serno>-sernr
+                                                            AND matnr = <ls_serno>-matnr.
+
+        READ TABLE lt_tj02t ASSIGNING FIELD-SYMBOL(<ls_tj02t>) WITH KEY istat = <ls_equi1>-stat.
+        "BINARY SEARCH.
+        IF <ls_tj02t> IS ASSIGNED.
+          IF <ls_init>-cstat IS INITIAL AND <ls_equi1>-inact = abap_false.
+            <ls_init>-cstat = <ls_tj02t>-txt04.
+          ELSEIF <ls_equi1>-inact = abap_false.
+            IF <ls_tj02t>-txt04 CN <ls_init>-cstat.
+              <ls_init>-cstat = <ls_init>-cstat && '-' && <ls_tj02t>-txt04.
+            ENDIF.
+          ENDIF.
+          UNASSIGN <ls_tj02t>.
+        ENDIF.
+      ENDLOOP.
+    ENDLOOP.
+    DELETE gt_init WHERE cstat IS INITIAL.
+    IF gt_init IS NOT INITIAL.
+      PERFORM display_init.
+    ELSE.
+      MESSAGE i041.
+    ENDIF.
+  ELSE.
+    MESSAGE i041.
+  ENDIF.
+
+ENDFORM.
+*&--------------------------------------------------------------------*
+*&      Form  user_command
+*&--------------------------------------------------------------------*
+*       text
+*---------------------------------------------------------------------*
+*      -->R_UCOMM    text
+*      -->RS_SELFIELDtext
+*---------------------------------------------------------------------*
+FORM user_command  USING pv_ucomm LIKE sy-ucomm
+                         ps_selfield TYPE slis_selfield.
+
+  DATA: lo_alv TYPE REF TO cl_gui_alv_grid.
+
+  CALL FUNCTION 'GET_GLOBALS_FROM_SLVC_FULLSCR'
+    IMPORTING
+      e_grid = lo_alv.
+
+  CALL METHOD lo_alv->check_changed_data.
+
+  CASE pv_ucomm.
+    WHEN 'BACK' OR 'EXIT' OR 'CANC'.
+      SET SCREEN 0.
+      LEAVE SCREEN.
+    WHEN '&DELINK'.
+      PERFORM delink.
+    WHEN '&SEL'.
+      PERFORM select_all_box.
+    WHEN '&DSEL'.
+      PERFORM dselect_all_box.
+  ENDCASE.
+  ps_selfield-refresh = abap_true.
+ENDFORM.                    "user_command
+*&---------------------------------------------------------------------*
+*& Form DISPLAY_INIT
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM display_init.
+
+  DATA: lt_fcat   TYPE lvc_t_fcat,
+        ls_layout TYPE lvc_s_layo,
+        lt_events TYPE slis_t_event,
+        ls_event  TYPE slis_alv_event.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING FIELD-SYMBOL(<ls_fcat>).
+  <ls_fcat>-fieldname   = 'CHECK'.
+  <ls_fcat>-coltext     = TEXT-001.
+  <ls_fcat>-edit        = 'X'.
+  <ls_fcat>-checkbox    = 'X'.
+  <ls_fcat>-col_pos     = 1.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING <ls_fcat>.
+  <ls_fcat>-fieldname   = 'MATNR'.
+  <ls_fcat>-coltext     = TEXT-002.
+  <ls_fcat>-col_pos     = 2.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING <ls_fcat>.
+  <ls_fcat>-fieldname   = 'SERNR'.
+  <ls_fcat>-coltext     = TEXT-003.
+  <ls_fcat>-col_pos     = 3.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING <ls_fcat>.
+  <ls_fcat>-fieldname   = 'VBELN'.
+  <ls_fcat>-coltext     = TEXT-004.
+  <ls_fcat>-col_pos     = 4.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING <ls_fcat>.
+  <ls_fcat>-fieldname   = 'POSNR'.
+  <ls_fcat>-coltext     = TEXT-005.
+  <ls_fcat>-col_pos     = 5.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING <ls_fcat>.
+  <ls_fcat>-fieldname   = 'EQUNR'.
+  <ls_fcat>-coltext     = TEXT-010.
+  <ls_fcat>-col_pos     = 6.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING <ls_fcat>.
+  <ls_fcat>-fieldname   = 'CSTAT'.
+  <ls_fcat>-coltext     = TEXT-011.
+  <ls_fcat>-col_pos     = 7.
+  <ls_fcat>-outputlen   = '100'.
+
+  ls_layout-col_opt = ls_layout-zebra = abap_true.
+
+  ls_event-name      = 'DATA_CHANGED'.
+  ls_event-form      = 'ALV_DATA_CHANGED'.
+  APPEND ls_event TO lt_events.
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY_LVC'
+    EXPORTING
+      i_callback_program       = sy-repid
+      i_callback_user_command  = 'USER_COMMAND'
+      i_callback_pf_status_set = 'SET_PF_STATUS'
+      is_layout_lvc            = ls_layout
+      it_fieldcat_lvc          = lt_fcat
+      i_save                   = 'X'
+      it_events                = lt_events
+    TABLES
+      t_outtab                 = gt_init
+    EXCEPTIONS ##FM_SUBRC_OK
+      program_error            = 1
+      OTHERS                   = 2.
+ENDFORM.
+*----------------------------------------------------------------------*
+*                      FORM SET_PF_STATUS                              *
+*----------------------------------------------------------------------*
+FORM set_pf_status USING ps_extab TYPE slis_t_extab.
+  SET PF-STATUS 'STANDARD'.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form DELINK
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM delink.
+
+  CONSTANTS: lc_i0099 TYPE j_status   VALUE 'I0099',
+             lc_e0001 TYPE j_status   VALUE 'E0001',
+             lc_e0019 TYPE j_status   VALUE 'E0019'.
+
+  DATA: ls_so_fr      TYPE ty_so_obd,
+
+        ls_status     TYPE jstat,
+        ls_delink     TYPE zmm_grt_sno_dlst,
+
+        lr_stat       TYPE RANGE OF j_status,
+
+        lt_status     TYPE TABLE OF jstat,
+        lt_vbak_h     TYPE TABLE OF ty_so,
+        lt_vbak_c     TYPE TABLE OF ty_so,
+        lt_so_fr      TYPE TABLE OF ty_so_obd,
+
+        gt_init_check TYPE STANDARD TABLE OF ty_init,
+        lt_ihpavb     TYPE STANDARD TABLE OF ihpavb.
+
+  SELECT zzlow FROM zca_constant INTO TABLE @DATA(lt_plant)
+                    WHERE zzmodule = 'SC' AND
+                          zzwricef = 'ZGRTSNODLNK' AND
+                          zzfield  = 'WERKS'.
+  IF sy-subrc = 0.
+  ENDIF.
+
+  LOOP AT gt_init INTO DATA(ls_init) WHERE check = 'X'.
+    APPEND ls_init TO gt_init_check.
+  ENDLOOP.
+
+  IF gt_init_check IS NOT INITIAL.
+*To fetch STO Details based on material and serial number.
+    SELECT objk~matnr,
+           objk~sernr,
+           objk~equnr,
+           objk~obknr,
+           ser01~lief_nr,
+           ekpo~ebeln,
+           ekpo~ebelp,
+           ekpo~werks
+      INTO TABLE @DATA(lt_result)
+      FROM objk
+      INNER JOIN ser01 ON ser01~obknr = objk~obknr
+      INNER JOIN ekbe   ON ekbe~vbeln_st = ser01~lief_nr
+      INNER JOIN ekpo   ON ekpo~ebeln    = ekbe~ebeln          ##DB_FEATURE_MODE[TABLE_LEN_MAX1]
+      FOR ALL ENTRIES IN @gt_init_check
+      WHERE objk~matnr = @gt_init_check-matnr
+        AND objk~sernr = @gt_init_check-sernr
+        AND ekpo~loekz <> 'L'.
+    IF sy-subrc <> 0.
+    ENDIF.
+  ELSE.
+    EXIT.
+  ENDIF.
+
+  "Get Return and Forward sales order.
+  IF s_vbeln IS NOT INITIAL AND gt_init_check IS NOT INITIAL.
+    SELECT vbak~salesdocument AS vbeln, vbak~sddocumentcategory AS vbtyp FROM i_salesdocumentbasic AS vbak
+      FOR ALL ENTRIES IN @gt_init_check WHERE vbak~salesdocument = @gt_init_check-vbeln INTO TABLE @DATA(lt_vbak).
+    IF sy-subrc = 0.
+      LOOP AT lt_vbak INTO DATA(ls_vbak).
+        CASE ls_vbak-vbtyp.
+          WHEN 'H'.
+            APPEND ls_vbak TO lt_vbak_h. "Return Sales order
+          WHEN 'C'.
+            APPEND ls_vbak TO lt_vbak_c. "Forward sales order
+        ENDCASE.
+      ENDLOOP.
+    ENDIF.
+  ENDIF.
+
+*Get Return sales order from Forward SO.
+  IF lt_vbak_c IS NOT INITIAL.
+    SELECT vbfa~precedingdocument          AS vbelv,
+           vbfa~subsequentdocument         AS vbeln,
+           vbfa~subsequentdocumentcategory AS vbtyp_n,
+           vbfa~precedingdocumentcategory  AS vbtyp_v
+      FROM i_sddocumentmultilevelprocflow  AS vbfa INTO TABLE @DATA(lt_vbeln_ret) FOR ALL ENTRIES IN @lt_vbak_c
+      WHERE vbfa~precedingdocument = @lt_vbak_c-vbeln AND vbfa~subsequentdocumentcategory = 'H'.
+    IF sy-subrc = 0.
+      DATA(lt_vbeln) = lt_vbeln_ret.
+      SORT lt_vbeln BY vbelv vbeln vbtyp_n vbtyp_v.
+      DELETE ADJACENT DUPLICATES FROM lt_vbeln COMPARING vbelv vbeln vbtyp_n vbtyp_v.
+    ENDIF.
+  ENDIF.
+
+*Get Forward sales order from Return SO.
+  IF lt_vbak_h IS NOT INITIAL.
+    SELECT vbfa~precedingdocument          AS vbelv,
+           vbfa~subsequentdocument         AS vbeln,
+           vbfa~subsequentdocumentcategory AS vbtyp_n,
+           vbfa~precedingdocumentcategory  AS vbtyp_v
+      FROM i_sddocumentmultilevelprocflow  AS vbfa INTO TABLE @DATA(lt_vbeln_fo) FOR ALL ENTRIES IN @lt_vbak_h
+      WHERE vbfa~subsequentdocument = @lt_vbak_h-vbeln AND vbfa~precedingdocumentcategory = 'C'.
+    IF sy-subrc = 0.
+      DATA(lt_vbeln_fwd) = lt_vbeln_fo.
+      SORT lt_vbeln_fwd BY vbelv vbeln vbtyp_n.
+      DELETE ADJACENT DUPLICATES FROM lt_vbeln_fwd COMPARING vbelv vbeln vbtyp_n.
+      APPEND LINES OF lt_vbeln_fwd TO lt_vbeln.
+    ENDIF.
+  ENDIF.
+
+  "Get OBD from Sales order-lt_vbeln.
+  IF lt_vbeln IS NOT INITIAL.
+
+    SELECT vbfa~precedingdocument AS vbelv,vbfa~subsequentdocument AS vbeln
+       FROM i_sddocumentmultilevelprocflow  AS vbfa INTO TABLE @DATA(lt_obd_delivery) FOR ALL ENTRIES IN @lt_vbeln
+       WHERE vbfa~precedingdocument = @lt_vbeln-vbeln AND  vbfa~subsequentdocumentcategory = 'T'.
+    IF sy-subrc = 0.
+      DATA(lt_obd) = lt_obd_delivery.
+      SORT lt_obd BY vbelv vbeln.
+      DELETE ADJACENT DUPLICATES FROM lt_obd COMPARING vbelv vbeln.
+    ENDIF.
+
+    SELECT vbeln,kunnr, parvw FROM vbpa FOR ALL ENTRIES IN @lt_vbeln
+        WHERE vbeln = @lt_vbeln-vbeln INTO TABLE @DATA(lt_customer_1).
+    IF sy-subrc = 0.
+    ENDIF.
+  ENDIF.
+
+  IF lt_vbeln IS NOT INITIAL.
+    SORT lt_vbeln BY vbeln.
+    SORT lt_obd BY vbeln.
+    LOOP AT lt_vbeln INTO DATA(ls_vbeln).
+      READ TABLE lt_obd WITH KEY vbelv = ls_vbeln-vbeln INTO DATA(ls_obd).
+      IF sy-subrc = 0.
+        ls_so_fr-r_vbeln_vl  = ls_obd-vbeln.
+        ls_so_fr-fw_vbeln_va = ls_vbeln-vbelv.
+        ls_so_fr-re_vbeln_va = ls_vbeln-vbeln.
+        ls_so_fr-kunnr       = lt_customer_1[ parvw = 'AG' vbeln = ls_vbeln-vbeln ]-kunnr.
+        ls_so_fr-rrc_partner = lt_customer_1[ parvw = 'WE' vbeln = ls_vbeln-vbeln ]-kunnr.
+        APPEND ls_so_fr TO lt_so_fr.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+
+
+*Filtering STO based on RRC return Plant.
+  IF lt_result IS NOT INITIAL.
+    DATA(lt_sto_result) = lt_result.
+    SORT lt_sto_result BY ebeln sernr werks.
+    DELETE ADJACENT DUPLICATES FROM lt_sto_result COMPARING ebeln sernr werks.
+    lt_result = lt_sto_result.
+    LOOP AT lt_result INTO DATA(ls_result).
+      READ TABLE lt_plant WITH KEY zzlow = ls_result-werks TRANSPORTING NO FIELDS.
+      IF sy-subrc = 0.
+        gs_delink-ebeln = ls_result-ebeln.
+        gs_delink-ebelp = ls_result-ebelp.
+        gs_delink-serialno = ls_result-sernr.
+        gs_delink-matnr = ls_result-matnr.
+        gs_delink-equnr = ls_result-equnr.
+        gs_delink-werks = ls_result-werks.
+        APPEND gs_delink TO gt_delink.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+
+*Fetch All deatils required for Report ZMM_GRT_SNO_DLST based on STO.
+  IF gt_delink IS NOT INITIAL.
+
+    SELECT DISTINCT ekko~purchasingdocument         AS ebeln,  "Purchasing Document Number
+                          ekko~correspncexternalreference AS ihrez,  "Return SO Number
+                          ekko~correspncinternalreference AS unsez,  "OBD number
+                          ekpo~plant                      AS werks,  "Plant
+                          ekpo~material                   AS matnr,   "Material
+                          ekkn~purchasingdocumentitem     AS ebelp,  "Item Number of Purchasing Document
+                          ekkn~salesdocument              AS vbeln,  "Sales Document
+                          ekkn~salesdocumentitem          AS vbelp,  "Item number of the SD document
+                          ekes~deliverydocument           AS ibd
+          FROM ( i_purchasingdocument AS ekko
+          INNER JOIN i_purchasingdocumentitem AS ekpo ON
+                     ekpo~purchasingdocument = ekko~purchasingdocument
+          INNER JOIN i_purdocacctassinment AS ekkn ON
+                     ekkn~purchasingdocument = ekko~purchasingdocument AND
+                     ekkn~purchasingdocument = ekpo~purchasingdocument AND
+                     ekkn~purchasingdocumentitem = ekpo~purchasingdocumentitem
+          INNER JOIN i_purgdocsupplierconfirmation AS ekes ON
+                     ekes~purchasingdocument = ekko~purchasingdocument AND
+                     ekes~purchasingdocument = ekkn~purchasingdocument ) FOR ALL ENTRIES IN @gt_delink
+          WHERE ekko~purchasingdocument = @gt_delink-ebeln INTO TABLE @DATA(lt_log_msg). "#EC CI_NO_TRANSFORM
+    IF sy-subrc = 0.
+
+    ENDIF.
+
+*** To Get Customer Details ***
+    IF lt_log_msg IS NOT INITIAL.
+      SELECT kunnr, parvw, vbeln FROM vbpa FOR ALL ENTRIES IN @lt_log_msg
+        WHERE vbeln = @lt_log_msg-vbeln INTO TABLE @DATA(lt_customer). "#EC CI_NO_TRANSFORM
+      IF sy-subrc = 0.
+      ENDIF.
+    ENDIF.
+
+
+    IF lt_log_msg IS NOT INITIAL .
+      SORT lt_log_msg BY ebeln.
+      LOOP AT gt_delink  ASSIGNING FIELD-SYMBOL(<fs_delink>).
+        READ TABLE lt_log_msg ASSIGNING FIELD-SYMBOL(<fs_ls_log_msg>) WITH KEY ebeln = <fs_delink>-ebeln BINARY SEARCH.
+        IF sy-subrc = 0.
+          LOOP AT lt_log_msg ASSIGNING FIELD-SYMBOL(<fs_final>) FROM sy-tabix WHERE ebeln = <fs_delink>-ebeln
+                                                                              AND matnr = <fs_delink>-matnr
+                                                                              AND werks = <fs_delink>-werks.
+
+            IF <fs_ls_log_msg>-ebeln <> <fs_final>-ebeln.
+              EXIT.
+            ENDIF.
+
+            <fs_delink>-mandt       = sy-mandt.
+            <fs_delink>-vbeln_vl    = <fs_final>-ibd.
+            <fs_delink>-r_vbeln_vl  = <fs_final>-unsez.
+            <fs_delink>-ebelp       = <fs_final>-ebelp.
+            <fs_delink>-fw_vbeln_va = <fs_final>-vbeln.
+            <fs_delink>-fw_posnr    = <fs_final>-vbelp.
+            <fs_delink>-re_vbeln_va = <fs_final>-ihrez.
+            <fs_delink>-re_posnr    = <fs_final>-vbelp.
+            <fs_delink>-kunnr       = lt_customer[ parvw = 'AG' vbeln = <fs_final>-vbeln ]-kunnr.
+            <fs_delink>-rrc_partner = lt_customer[ parvw = 'WE' vbeln = <fs_final>-vbeln ]-kunnr.
+          ENDLOOP.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+    DELETE gt_delink WHERE vbeln_vl IS INITIAL AND
+                           r_vbeln_vl IS INITIAL AND
+                           fw_vbeln_va IS INITIAL AND
+                           re_vbeln_va IS INITIAL.
+
+  ENDIF.
+
+  IF gt_init_check IS NOT INITIAL.
+    SELECT  mandt,
+              vbeln_vl,
+              r_vbeln_vl,
+              ebeln,
+              ebelp,
+              werks,
+              fw_vbeln_va,
+              fw_posnr,
+              re_vbeln_va,
+              re_posnr,
+              matnr,
+              serialno,
+              equnr,
+              kunnr,
+              rrc_partner,
+              date_va,
+              time,
+              status,
+              message FROM zmm_grt_sno_dlst INTO TABLE @DATA(lt_log) FOR ALL ENTRIES IN @gt_init_check
+                                             WHERE serialno = @gt_init_check-sernr AND
+                                                   matnr =  @gt_init_check-matnr AND
+                                                   equnr = @gt_init_check-equnr.
+  ENDIF.
+*  IF gt_delink IS NOT INITIAL.
+  lr_stat = VALUE #( FOR <fs_equi> IN gt_equi
+                      ( sign = 'I'
+                        option = 'EQ'
+                        low = <fs_equi>-stat
+                        high = '' ) ).
+  SORT lr_stat BY sign option low high.
+  DELETE ADJACENT DUPLICATES FROM lr_stat COMPARING ALL FIELDS.
+  LOOP AT lr_stat INTO DATA(ls_stat).         "assigning all the types of status available
+    IF NOT ( ls_stat-low EQ lc_i0099 OR
+             ls_stat-low EQ lc_e0001 OR
+             ls_stat-low EQ lc_e0019 ).
+      ls_status-stat = ls_stat-low.
+      ls_status-inact = abap_true.
+      APPEND ls_status TO lt_status.
+      CLEAR ls_status.
+    ENDIF.
+  ENDLOOP.
+
+  ls_status-stat = lc_i0099.
+  APPEND ls_status TO lt_status.
+  CLEAR ls_status.
+  ls_status-stat = lc_e0001.
+  APPEND ls_status TO lt_status.
+  CLEAR ls_status.
+  ls_status-stat = lc_e0019.
+  APPEND ls_status TO lt_status.
+  CLEAR ls_status.
+
+  SORT lt_status.
+  SORT gt_equi BY sernr.
+  LOOP AT gt_init ASSIGNING FIELD-SYMBOL(<ls_init>) WHERE check = abap_true. "#EC CI_IMUD_NESTED
+    APPEND INITIAL LINE TO gt_final ASSIGNING FIELD-SYMBOL(<ls_final>).
+    <ls_final>-matnr = <ls_init>-matnr.
+    <ls_final>-posnr = <ls_init>-posnr.
+    <ls_final>-sernr = <ls_init>-sernr.
+    <ls_final>-vbeln = <ls_init>-vbeln.
+    <ls_final>-cstat = <ls_init>-cstat.
+    READ TABLE gt_equi ASSIGNING FIELD-SYMBOL(<ls_equi>) WITH KEY sernr = <ls_init>-sernr
+                                                         BINARY SEARCH.
+    IF <ls_equi> IS ASSIGNED.
+
+      "  Unlock the equipment for followed BAPI change
+      CALL FUNCTION 'DEQUEUE_EIEQUI'
+        EXPORTING
+          equnr     = <ls_equi>-equnr
+          _synchron = abap_true.
+      IF sy-subrc = 0 ##FM_SUBRC_OK.
+        "Change equipment number status
+        CALL FUNCTION 'STATUS_CHANGE_INTERN_VB'
+          EXPORTING
+            objnr  = <ls_equi>-objnr
+          TABLES
+            status = lt_status.
+        IF sy-subrc = 0 ##FM_SUBRC_OK.
+          COMMIT WORK AND WAIT.
+
+          CALL FUNCTION 'PM_PARTNER_GET'
+            EXPORTING
+              objnr    = <ls_equi>-objnr
+            TABLES
+              ihpa_tab = lt_ihpavb.
+
+          IF sy-subrc IS INITIAL AND lt_ihpavb IS NOT INITIAL ##FM_SUBRC_OK.
+            LOOP AT lt_ihpavb ASSIGNING FIELD-SYMBOL(<fs_ihpavb>) .
+              <fs_ihpavb>-updkz = 'D'.
+              IF sy-tabix = 1 AND <fs_ihpavb>-parnr IS NOT INITIAL.
+                DATA(lv_partner) = |{ <fs_ihpavb>-parnr }({ <fs_ihpavb>-parvw })|.
+              ELSEIF <fs_ihpavb>-parnr IS NOT INITIAL.
+                lv_partner = lv_partner && ',' && |{ <fs_ihpavb>-parnr }({ <fs_ihpavb>-parvw })|.
+              ENDIF.
+            ENDLOOP.
+
+            UNASSIGN <fs_ihpavb>.
+
+            CALL FUNCTION 'PM_PARTNER_UPDATE'
+              TABLES
+                fxihpa = lt_ihpavb.
+
+          ENDIF.
+          <ls_final>-fstat = 'AVLB-INIT-INI'.
+          READ TABLE gt_delink WITH KEY serialno = <ls_equi>-sernr
+                                        matnr    = <ls_equi>-matnr
+                                        INTO gs_delink BINARY SEARCH.
+          IF sy-subrc = 0.
+            gs_delink-date_va = sy-datum.
+            gs_delink-time = sy-uzeit.
+            gs_delink-status = 'AVLB-INIT-INI'.
+            gs_delink-parnr_parvw = lv_partner.
+            MESSAGE s123(zsc1) INTO gs_delink-message.
+            IF line_exists( lt_log[ serialno = gs_delink-serialno matnr = gs_delink-matnr  ] ).
+              APPEND gs_delink TO gt_delink_update.
+            ELSE.
+              APPEND gs_delink TO gt_delink_insert.
+            ENDIF.
+          ELSE.
+            READ TABLE lt_so_fr WITH KEY fw_vbeln_va = <ls_init>-vbeln INTO DATA(ls_cust_so).
+            IF sy-subrc = 0.
+              ls_delink-r_vbeln_vl  = ls_cust_so-r_vbeln_vl.
+              ls_delink-fw_vbeln_va = ls_cust_so-fw_vbeln_va.
+              ls_delink-re_vbeln_va = ls_cust_so-re_vbeln_va.
+              ls_delink-kunnr       = ls_cust_so-kunnr.
+              ls_delink-rrc_partner = ls_cust_so-rrc_partner.
+              ls_delink-fw_posnr    = <ls_init>-posnr.
+              ls_delink-re_posnr    = <ls_init>-posnr.
+            ELSE.
+              READ TABLE lt_so_fr WITH KEY re_vbeln_va = <ls_init>-vbeln INTO ls_cust_so.
+              IF sy-subrc = 0.
+                ls_delink-r_vbeln_vl  = ls_cust_so-r_vbeln_vl.
+                ls_delink-fw_vbeln_va = ls_cust_so-fw_vbeln_va.
+                ls_delink-re_vbeln_va = ls_cust_so-re_vbeln_va.
+                ls_delink-kunnr       = ls_cust_so-kunnr.
+                ls_delink-rrc_partner = ls_cust_so-rrc_partner.
+                ls_delink-fw_posnr    = <ls_init>-posnr.
+                ls_delink-re_posnr    = <ls_init>-posnr.
+              ENDIF.
+            ENDIF.
+            ls_delink-date_va  = sy-datum.
+            ls_delink-time     = sy-uzeit.
+            ls_delink-status   = 'AVLB-INIT-INI'.
+            ls_delink-equnr    = <ls_equi>-equnr.
+            ls_delink-serialno = <ls_equi>-sernr.
+            ls_delink-matnr    = <ls_equi>-matnr.
+            ls_delink-parnr_parvw = lv_partner.
+            MESSAGE s123(zsc1) INTO ls_delink-message.
+            IF line_exists( lt_log[ serialno = <ls_equi>-sernr matnr = <ls_equi>-matnr  ] ).
+              APPEND ls_delink TO gt_delink_update.
+            ELSE.
+              APPEND ls_delink TO gt_delink_insert.
+            ENDIF.
+          ENDIF.
+          " After we set deletion flag, we want to unlock this equipment
+          CALL FUNCTION 'EQUIPMENT_UNLOCK'
+            EXPORTING
+              equi_no        = <ls_equi>-equnr
+            EXCEPTIONS ##FM_SUBRC_OK
+              equi_not_found = 1
+              lock_failure   = 2
+              OTHERS         = 3.
+        ENDIF.
+        UNASSIGN <ls_equi>.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+  IF gt_delink_insert IS NOT INITIAL.
+    INSERT  zmm_grt_sno_dlst FROM TABLE gt_delink_insert.
+  ENDIF.
+
+  IF gt_delink_update IS NOT INITIAL.
+    UPDATE zmm_grt_sno_dlst FROM TABLE gt_delink_update.
+  ENDIF.
+  IF gt_final IS NOT INITIAL.
+    PERFORM dispay_data.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form SELECT_ALL_BOX
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM select_all_box.
+  LOOP AT gt_init ASSIGNING FIELD-SYMBOL(<ls_init>).
+    <ls_init>-check = abap_true.
+  ENDLOOP.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form DSELECT_ALL_BOX
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM dselect_all_box.
+  LOOP AT gt_init ASSIGNING FIELD-SYMBOL(<ls_init>).
+    <ls_init>-check = abap_false.
+  ENDLOOP.
+ENDFORM.
+FORM alv_data_changed  USING po_data_changed TYPE REF TO cl_alv_changed_data_protocol.
+  LOOP AT po_data_changed->mt_good_cells ASSIGNING FIELD-SYMBOL(<ls_good>).
+    EXIT.
+  ENDLOOP.
+ENDFORM.                    "ALV_DATA_CHANGED
+*&---------------------------------------------------------------------*
+*& Form MODIFY_SCReEN
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM modify_screen.
+  LOOP AT SCREEN.
+    IF screen-group3 <> 'BLK'.
+      IF p_so = abap_true.
+        IF screen-group1 = '1' OR screen-group1 = '0'.
+          screen-active = 1.
+          screen-intensified = 1.
+        ELSE.
+          screen-active = 0.
+          screen-intensified = 0.
+        ENDIF.
+      ELSEIF p_sto = abap_true.
+        IF screen-group1 = '2' OR screen-group1 = '0'.
+          screen-active = 1.
+          screen-intensified = 1.
+        ELSE.
+          screen-active = 0.
+          screen-intensified = 0.
+        ENDIF.
+      ELSEIF p_matnr = abap_true.
+        IF screen-group1 = '3' OR screen-group1 = '0'.
+          screen-active = 1.
+          screen-intensified = 1.
+        ELSE.
+          screen-active = 0.
+          screen-intensified = 0.
+        ENDIF.
+      ENDIF.
+      MODIFY SCREEN.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form FIELD_VALIDATION
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM field_validation.
+  CONSTANTS: lc_name TYPE rvari_vnam VALUE 'ER7823',
+             lc_type TYPE rsscr_kind VALUE 'P',
+             lc_numb TYPE tvarv_numb VALUE '0000'.
+
+  SELECT SINGLE low
+    FROM tvarvc
+    INTO @DATA(lv_active)
+   WHERE name = @lc_name
+     AND type = @lc_type
+     AND numb = @lc_numb.
+  IF lv_active = abap_false.
+    MESSAGE e052(z_dekit).
+  ENDIF.
+
+  IF sy-ucomm = 'ONLI'.
+    IF s_vbeln IS INITIAL AND s_ebeln IS INITIAL AND s_matnr IS INITIAL.
+      MESSAGE e038.
+    ENDIF.
+    IF s_matnr IS NOT INITIAL AND s_sernr IS INITIAL.
+      MESSAGE e039.
+    ENDIF.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form INIT_VARIABLES
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM init_variables.
+
+  IF p_so = abap_true.
+    CLEAR: s_ebeln[], s_ebelp[], s_matnr[], s_sernr[], s_ebeln, s_ebelp, s_matnr, s_sernr.
+  ELSEIF p_sto = abap_true.
+    CLEAR: s_vbeln[], s_posnr[], s_matnr[], s_sernr[], s_vbeln, s_posnr, s_matnr, s_sernr.
+  ELSEIF p_matnr = abap_true.
+    CLEAR: s_ebeln[], s_ebelp[], s_vbeln[], s_posnr[], s_ebeln, s_ebelp, s_vbeln, s_posnr.
+  ENDIF.
+
+  CLEAR: gt_init, gt_final.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*& Form DISPAY_DATA
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM dispay_data .
+
+  DATA: lt_fcat   TYPE lvc_t_fcat,
+        ls_layout TYPE lvc_s_layo.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING FIELD-SYMBOL(<ls_fcat>).
+  <ls_fcat>-fieldname   = 'MATNR'.
+  <ls_fcat>-coltext     = TEXT-012.
+  <ls_fcat>-col_pos     = 1.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING <ls_fcat>.
+  <ls_fcat>-fieldname   = 'SERNR'.
+  <ls_fcat>-coltext     = TEXT-013.
+  <ls_fcat>-col_pos     = 2.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING <ls_fcat>.
+  <ls_fcat>-fieldname   = 'VBELN'.
+  <ls_fcat>-coltext     = TEXT-014.
+  <ls_fcat>-col_pos     = 2.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING <ls_fcat>.
+  <ls_fcat>-fieldname   = 'POSNR'.
+  <ls_fcat>-coltext     = TEXT-015.
+  <ls_fcat>-col_pos     = 4.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING <ls_fcat>.
+  <ls_fcat>-fieldname   = 'CSTAT'.
+  <ls_fcat>-coltext     = TEXT-016.
+  <ls_fcat>-col_pos     = 5.
+  <ls_fcat>-outputlen   = '100'.
+
+  APPEND INITIAL LINE TO lt_fcat ASSIGNING <ls_fcat>.
+  <ls_fcat>-fieldname   = 'FSTAT'.
+  <ls_fcat>-coltext     = TEXT-017.
+  <ls_fcat>-col_pos     = 6.
+
+  ls_layout-cwidth_opt = ls_layout-zebra = abap_true.
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY_LVC'
+    EXPORTING
+      i_callback_program = sy-repid
+      is_layout_lvc      = ls_layout
+      it_fieldcat_lvc    = lt_fcat
+      i_save             = 'X'
+    TABLES
+      t_outtab           = gt_final
+    EXCEPTIONS ##FM_SUBRC_OK
+      program_error      = 1
+      OTHERS             = 2.
+ENDFORM.
