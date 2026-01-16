@@ -1,0 +1,63 @@
+*&---------------------------------------------------------------------*
+*& Report ZMM_GRT_SERIAL_NO_DELIN
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zmm_grt_serial_no_delink.
+************************************************************************
+*  Project             : Global Returns transformation project.        *
+*  Program Title       : ZMM_GRT_SERIAL_NO_DELINk                      *
+*  Author              : PKOTEGOWDA                                    *
+*  Date                : 02/05/2025                                    *
+*  Transport           : DEVK9A6TJG                                    *
+*----------------------------------------------------------------------*
+*  Description         : This process removes the association between the
+*                        serial number, material, and partner function
+*                        from the equipment for the line item in the
+*                        Inbound Delivery (IBD) or Outbound Delivery (OBD)
+*                        during the return process
+*  Run Frequency       : Triggers on output type ZSRD
+*----------------------------------------------------------------------*
+TABLES: nast.
+
+START-OF-SELECTION.
+*&---------------------------------------------------------------------*
+*& Form F_DELINK_SERNR
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM entry USING e_rc e_us_screen.
+
+  CLEAR e_rc.
+
+  DATA: lv_delivery   TYPE vbeln_vl.
+
+
+  CALL METHOD zcl_ca_common_utilities=>get_enhancement_switch
+    EXPORTING
+      it_object_id  = 'ZGRTSNODLNK'                      " WRICEF ID
+      it_module     = zif_ca_constants=>zc_module_sc     " Module name from cross app. interface
+      it_field      = zif_ca_constants=>zc_switch        " DDIC field reference
+      it_counter    = zif_ca_constants=>zc_counter
+    RECEIVING
+      rx_enh_switch =  DATA(lv_enh_switch).   " Enhancement switch (On/Off)
+    .
+ IF lv_enh_switch EQ abap_false.
+
+  lv_delivery = nast-objky.
+
+  lv_delivery = |{ lv_delivery ALPHA = IN }|.
+    "To get Instance of class ZCL_MM_RET_SERNR_DELINK.
+    DATA(lo_sernr_delink) = zcl_mm_ret_sernr_delink=>get_instance( lv_delivery ).
+
+    IF lo_sernr_delink IS BOUND.
+      "Call method for Serial Number Delinking.
+      lo_sernr_delink->get_data( ).
+    ENDIF.
+
+  ENDIF.
+
+ENDFORM.
