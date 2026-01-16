@@ -1,0 +1,109 @@
+*&=====================================================================*
+*& Program              : RV61B848                                     *
+*& Author               :                                              *
+*& Date                 :                                              *
+*& Change Request       :                                              *
+*& SAP Change Request # :                                              *
+*&=====================================================================*
+*& Description          : Routine for validation of ZSRD Output        *
+*&=====================================================================*
+*& Includes             : RV61B848                                     *
+*&=====================================================================*
+*----------------------------------------------------------------------*
+* MODIFICATION HISTORY                                                 *
+*  Project             : Global Returns transformation project.        *
+*  Author              : HBHATEJAUST                                   *
+*  Date                : 18/05/2025                                    *
+*  Transport           : DEVK9A6TJG                                    *
+*  Description         : Routine for validation ZSRD Output
+*----------------------------------------------------------------------*
+FORM kobed_848.
+
+  "Get LIKP records from stack
+  DATA: ls_likp TYPE likpvb,
+        lt_lips TYPE TABLE OF lipsvb.
+
+  FIELD-SYMBOLS : <lfs_likp> TYPE any,
+                  <lfs_lips> TYPE table.
+
+
+  " Check if PGR is done (WBSTK = 'C')
+  IF KOMKBE1-WBSTK = 'C'.
+    DATA(lv_pgr_done) = abap_true.
+  ELSE.
+    lv_pgr_done = abap_false.
+  ENDIF.
+
+  "Get LIPS Records from stack
+  CLEAR: lt_lips.
+  ASSIGN ('(SAPMV50A)XLIPS[]') TO <lfs_lips>.
+  IF sy-subrc = 0 AND <lfs_lips> IS ASSIGNED.
+    lt_lips = <lfs_lips>.
+  ENDIF.
+
+
+  " Check if IBD is linked to a return order
+  LOOP AT lt_lips INTO DATA(ls_lips).
+      SELECT SINGLE vbak~vbeln, vbak~vbtyp
+      FROM vbak as vbak INNER JOIN
+           ekko as ekko on vbak~vbeln = ekko~ihrez
+      where ekko~ebeln = @ls_lips-vgbel
+      AND vbtyp = 'H' INTO @DATA(ls_vbak).
+      IF sy-subrc = 0.
+        EXIT.
+      ENDIF.
+  ENDLOOP.
+
+  " If both conditions are satisfied, set sy-subrc to 0
+  IF lv_pgr_done = abap_true AND ls_vbak-vbtyp = 'H'.
+    sy-subrc = 0.
+  ELSE.
+    sy-subrc = 4.
+  ENDIF.
+ENDFORM.
+FORM kobev_848.
+
+  "Get LIKP records from stack
+  DATA: ls_likp TYPE likpvb,
+        lt_lips TYPE TABLE OF lipsvb.
+
+  FIELD-SYMBOLS : <lfs_likp> TYPE any,
+                  <lfs_lips> TYPE table.
+
+
+  " Check if PGR is done (WBSTK = 'C')
+  IF KOMKBE1-WBSTK = 'C'.
+    DATA(lv_pgr_done) = abap_true.
+  ELSE.
+    lv_pgr_done = abap_false.
+  ENDIF.
+
+  "Get LIPS Records from stack
+  CLEAR: lt_lips.
+  ASSIGN ('(SAPMV50A)XLIPS[]') TO <lfs_lips>.
+  IF sy-subrc = 0 AND <lfs_lips> IS ASSIGNED.
+    lt_lips = <lfs_lips>.
+  ENDIF.
+
+
+  " Check if IBD is linked to a return order
+  LOOP AT lt_lips INTO DATA(ls_lips).
+    " Check if the delivery is linked to a return order
+      SELECT SINGLE vbak~vbeln, vbak~vbtyp
+      FROM vbak as vbak INNER JOIN
+           ekko as ekko on vbak~vbeln = ekko~ihrez
+      where ekko~ebeln = @ls_lips-vgbel
+      AND vbtyp = 'H' INTO @DATA(ls_vbak).
+      IF sy-subrc = 0.
+        EXIT.
+      ENDIF.
+  ENDLOOP.
+
+  " If both conditions are satisfied, set sy-subrc to 0
+  IF lv_pgr_done = abap_true AND ls_vbak-vbtyp = 'H'.
+    sy-subrc = 0.
+  ELSE.
+    sy-subrc = 4.
+  ENDIF.
+
+ENDFORM.
