@@ -1,0 +1,357 @@
+Main Report
+
+*---------------------------------------------------------------------*
+*  Program Title        : ZSCRP001_SO_TEXT_UPDATE
+*  Author               : Sonia Francis
+*  Date                 : 16.05.2025
+*  SAP Change Request # : DEVK9A6W6T
+*  Description          : Sales Order Header Text Update
+*Requirement ID         :
+*----------------------------------------------------------------------*
+* MODIFICATION HISTORY
+*  SAP Change Request  : DEVK9XXXXX
+*  Change Driver       : Name
+*  Author              : Name (userid)
+*  Date                : MM/DD/YYYY
+*  Description         : Initial Development
+*  Requirement ID      : WRICEF ID/CR number
+*----------------------------------------------------------------------*
+REPORT zscrp001_so_text_update NO STANDARD PAGE HEADING.
+************************************************************************
+*                         Include                                      *
+************************************************************************
+INCLUDE : zscrp001_so_text_update_top,  " Global Data declaration
+          zscrp001_so_text_update_s01,  " Selection Screen
+          zscrp001_so_text_update_f01.  " Logic
+
+INITIALIZATION.
+  DATA(lo_obj) = NEW lcl_text( ).    " Object for lcl_text class
+
+AT SELECTION-SCREEN ON s_vbeln.
+  lo_obj->validate_vbeln( ).         " Validate SO
+
+AT SELECTION-SCREEN ON p_txtid.
+  lo_obj->validate_txtid( ).         " Validate Text ID
+
+
+************************************************************************
+*                         Start of Selection                           *
+************************************************************************
+
+START-OF-SELECTION.
+  lo_obj->get_data( ). " Get Data
+
+************************************************************************
+*                         End of Selection                           *
+************************************************************************
+
+END-OF-SELECTION.
+  lo_obj->display( ). " Display output
+
+
+INCLUDE – DATA DECLARATION
+*---------------------------------------------------------------------*
+*  Program Title        : ZSCRP001_SO_TEXT_UPDATE_TOP
+*  Author               : Sonia Francis
+*  Date                 : 16.05.2025
+*  SAP Change Request # : DEVK9A6W6T
+*  Description          : Sales Order Header Text Update
+*  Type                 : New Program
+*  Requirement Ref.     :
+*----------------------------------------------------------------------*
+* MODIFICATION HISTORY
+*
+*  SAP Change Request #  : NA
+*  Change Driver         : NA
+*  Author                : NA
+*  Modification Date     : NA
+*  Description           : NA
+*----------------------------------------------------------------------*
+
+*********************************************************************
+**                S T R U C T U R E S                              **
+*********************************************************************
+
+  TYPES : BEGIN OF gty_vbak,        " Sales Order type
+            vbeln TYPE vbak-vbeln,  " Sales order
+            vkorg TYPE vbak-vkorg,  " Sales Area
+            vtweg TYPE vbak-vtweg,  " Distribution Channel
+            spart TYPE vbak-spart,  " Division
+          END OF gty_vbak.
+
+  TYPES: BEGIN OF gty_out,          " Output type
+           vbeln  TYPE vbak-vbeln,  " Sales Order
+           tdid   TYPE tdid,        " Text ID
+           value  TYPE tdline,      " Text Value
+           status TYPE c LENGTH 132, " Text Status
+         END OF gty_out.
+
+***************************************************************************************
+**                I N T E R N A L  T A B L E S  &  W O R K  A R E A                  **
+***************************************************************************************
+
+  DATA: gt_vbak   TYPE TABLE OF gty_vbak,         " Sales Order Internal Table
+        gs_vbak   TYPE gty_vbak,                  " Sales Order Workarea
+        gt_lines  TYPE TABLE OF tline,            " Lines Internal tabel
+        gs_lines  TYPE tline,                     " Lines Workarea
+        gs_header TYPE thead,                     " Header Workarea
+        gt_out    TYPE STANDARD TABLE OF gty_out, " Output Internal Table
+        gs_out    TYPE gty_out.                   " Output Workarea
+
+
+*********************************************************************
+**                   C O N S T A N T S                             **
+*********************************************************************
+
+  CONSTANTS : gc_success TYPE string VALUE 'Text Updated Successfully' ##NO_TEXT,
+              gc_failure TYPE string VALUE 'Failure in Text Update - ' ##No_TEXT,
+              gc_textid  TYPE string VALUE ' Text ID not available in ' ##NO_TEXT,
+              gc_so      TYPE string VALUE ' Sales Order' ##NO_TEXT,
+              gc_edit    TYPE string VALUE ' is Currently being processed by user : ' ##NO_TEXT,
+              gc_spras   TYPE c VALUE 'E',
+              gc_object  TYPE c LENGTH 4 VALUE 'VBBK',
+              gc_txtob   TYPE c LENGTH 1 VALUE 'A'.
+
+
+*********************************************************************
+**                   V A R I A B L E S                             **
+*********************************************************************
+
+  DATA : gv_name   TYPE tdobname,                     " Text name
+         gv_object TYPE tdobject VALUE gc_object.   " Text object
+
+INCLUDE – SELECTION SCREEN
+*---------------------------------------------------------------------*
+*  Program Title        : ZSCRP001_SO_TEXT_UPDATE_S01
+*  Author               : Sonia Francis
+*  Date                 : 16.05.2025
+*  SAP Change Request # : DEVK9A6W6T
+*  Description          : Sales Order Header Text Update
+*  Type                 : New Program
+*  Requirement Ref.     :
+*----------------------------------------------------------------------*
+* MODIFICATION HISTORY
+*
+*  SAP Change Request #  : NA
+*  Change Driver         : NA
+*  Author                : NA
+*  Modification Date     : NA
+*  Description           : NA
+*----------------------------------------------------------------------*
+
+TABLES:vbak,ttxid ##NEEDED.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.       " Sales Order input
+SELECT-OPTIONS : s_vbeln FOR vbak-vbeln OBLIGATORY NO INTERVALS.
+SELECTION-SCREEN SKIP 1.
+SELECTION-SCREEN END OF BLOCK b1.
+
+SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-002.       " Text input
+PARAMETERS     : p_txtid  TYPE ttxid-tdid OBLIGATORY,
+                 p_txtval TYPE tdline OBLIGATORY.
+SELECTION-SCREEN SKIP 1.
+PARAMETERS :     p_check AS CHECKBOX MODIF ID hid.
+SELECTION-SCREEN END OF BLOCK b2.
+
+INCLUDE – GET DATA 
+*---------------------------------------------------------------------*
+*  Program Title        : ZSCRP001_SO_TEXT_UPDATE_F01
+*  Author               : Sonia Francis
+*  Date                 : 16.05.2025
+*  SAP Change Request # : DEVK9A6W6T
+*  Description          : Sales Order Header Text Update
+*  Type                 : New Program
+*  Requirement Ref.     :
+*----------------------------------------------------------------------*
+* MODIFICATION HISTORY
+*
+*  SAP Change Request #  : NA
+*  Change Driver         : NA
+*  Author                : NA
+*  Modification Date     : NA
+*  Description           : NA
+*----------------------------------------------------------------------*
+
+CLASS lcl_text DEFINITION  ##CLASS_FINAL.
+  PUBLIC SECTION.
+    DATA lo_alv TYPE REF TO cl_salv_table.
+    METHODS : validate_vbeln,
+      validate_txtid,
+      get_data,
+      display.
+ENDCLASS.
+
+CLASS lcl_text IMPLEMENTATION.
+
+  METHOD validate_vbeln.                                    " Method to Validate Sales Order
+    IF s_vbeln IS NOT INITIAL.
+      SELECT vbeln vkorg vtweg spart FROM vbak
+        INTO TABLE gt_vbak
+            WHERE vbeln IN s_vbeln.
+      IF gt_vbak IS INITIAL.
+        MESSAGE e208(00) WITH TEXT-003.                     " Enter Valid Sales order
+      ENDIF.
+      SORT gt_vbak BY vbeln.
+      LOOP AT gt_vbak INTO gs_vbak.
+        AUTHORITY-CHECK OBJECT 'V_VBKA_VKO'
+          ID 'VKORG' FIELD gs_vbak-vkorg
+          ID 'VTWEG' FIELD gs_vbak-vtweg
+          ID 'SPART' FIELD gs_vbak-spart
+          ID 'ACTVT' FIELD '02' ##AUTH_FLD_MISSING.
+        IF sy-subrc <> 0.
+          " User is not authorized
+          MESSAGE TEXT-007 TYPE 'E'.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD validate_txtid.                                    " Method to Validate Text ID
+    IF p_txtid IS NOT INITIAL AND s_vbeln IS NOT INITIAL.
+      SELECT SINGLE tdid FROM ttxid
+        INTO @DATA(lv_text)
+        WHERE tdid EQ @p_txtid AND tdobject EQ @gc_object .
+      IF lv_text IS INITIAL.
+        MESSAGE e208(00) WITH TEXT-004.
+      ENDIF.
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD get_data.                           " Method to get data
+    SELECT a~vbeln,a~auart,b~txtgr,c~tdid FROM vbak AS a
+        LEFT OUTER JOIN tvak AS b
+        ON a~auart EQ b~auart
+        LEFT OUTER JOIN ttxern AS c
+        ON b~txtgr EQ c~txtgr AND c~tdobject EQ  @gc_object AND c~txtob EQ @gc_txtob AND c~tdid EQ @p_txtid
+        WHERE a~vbeln IN @s_vbeln
+        INTO TABLE @DATA(lt_text).
+
+    IF lt_text IS NOT INITIAL.
+      SORT lt_text BY vbeln.
+      LOOP AT lt_text INTO DATA(ls_text).
+        IF ls_text-tdid IS NOT INITIAL.
+          CALL FUNCTION 'ENQUEUE_EVVBAKE'
+            EXPORTING
+              vbeln          = ls_text-vbeln
+            EXCEPTIONS
+              foreign_lock   = 1
+              system_failure = 2
+              OTHERS         = 3.
+          IF sy-subrc <> 0.
+            gs_out-status = |{ gc_failure } { ls_text-vbeln } { gc_so } { gc_edit } { sy-msgv1 }|.
+          ENDIF.
+          IF sy-subrc = 0.
+            gv_name = ls_text-vbeln.
+            IF p_check IS INITIAL.
+              CALL FUNCTION 'READ_TEXT'
+                EXPORTING
+*                 CLIENT                  = SY-MANDT
+                  id                      = ls_text-tdid
+                  language                = gc_spras
+                  name                    = gv_name
+                  object                  = gv_object
+                TABLES
+                  lines                   = gt_lines
+                EXCEPTIONS
+                  id                      = 1
+                  language                = 2
+                  name                    = 3
+                  not_found               = 4
+                  object                  = 5
+                  reference_check         = 6
+                  wrong_access_to_archive = 7
+                  OTHERS                  = 8.
+              IF sy-subrc <> 0 ##NEEDED.
+* Implement suitable error handling here
+              ENDIF.
+            ENDIF.
+            IF gt_lines IS NOT INITIAL.
+              gs_lines-tdformat = '*'.
+              gs_lines-tdline = p_txtval.
+              APPEND gs_lines TO gt_lines.
+              CLEAR gs_lines.
+
+            ELSE.
+              gs_lines-tdline = p_txtval.
+              APPEND gs_lines TO gt_lines.
+              CLEAR gs_lines.
+            ENDIF.
+
+            IF gt_lines IS NOT INITIAL.
+              CLEAR gs_header.
+              gs_header = CORRESPONDING #( ls_text ).
+              gs_header-tdobject = gv_object.
+              gs_header-tdname = gv_name.
+              gs_header-tdspras = gc_spras.
+
+              CALL FUNCTION 'SAVE_TEXT'
+                EXPORTING
+*                 CLIENT          = SY-MANDT
+                  header          = gs_header
+                  savemode_direct = abap_true
+                TABLES
+                  lines           = gt_lines
+                EXCEPTIONS
+                  id              = 1
+                  language        = 2
+                  name            = 3
+                  object          = 4
+                  OTHERS          = 5.
+              IF sy-subrc = 0.
+                CALL FUNCTION 'COMMIT_TEXT'.
+                IF sy-subrc = 0 ##FM_SUBRC_OK.
+                  gs_out-status = gc_success.
+                ENDIF.
+              ENDIF.
+            ENDIF.
+            CALL FUNCTION 'DEQUEUE_EVVBAKE'
+              EXPORTING
+                vbeln = ls_text-vbeln.
+            IF sy-subrc <> 0 ##FM_SUBRC_OK.
+              MESSAGE e208(00) WITH TEXT-006.
+            ENDIF.
+          ENDIF.
+        ELSE.
+          gs_out-status = |{ gc_failure } { p_txtid } { gc_textid } { ls_text-vbeln } { gc_so }|.
+        ENDIF.
+        REFRESH  gt_lines.
+        gs_out-vbeln = ls_text-vbeln.
+        gs_out-tdid = p_txtid.
+        gs_out-value = p_txtval.
+        APPEND gs_out TO gt_out.
+        CLEAR gs_out.
+        CLEAR gv_name.
+      ENDLOOP.
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD display.                                   " Method to display ALV output
+
+    TRY.
+        cl_salv_table=>factory(
+          IMPORTING r_salv_table = lo_alv
+          CHANGING  t_table      = gt_out ).
+
+        lo_alv->get_columns( )->get_column('VBELN')->set_long_text('Sales Document Number') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('VBELN')->set_output_length( value = 20 ).
+
+        lo_alv->get_columns( )->get_column('TDID')->set_long_text('Header Text ID') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('TDID')->set_output_length( value = 16 ).
+
+        lo_alv->get_columns( )->get_column('VALUE')->set_long_text('Text Value') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('VALUE')->set_output_length( value = 20 ).
+
+        lo_alv->get_columns( )->get_column('STATUS')->set_long_text('Text Update Status') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('STATUS')->set_output_length( value = 80 ).
+
+        lo_alv->display( ).
+      CATCH cx_salv_msg INTO DATA(lx_msg).
+        MESSAGE lx_msg->get_text( ) TYPE 'E'.
+      CATCH cx_salv_not_found INTO DATA(lx_not_found).
+        MESSAGE lx_not_found->get_text( ) TYPE 'E'.
+    ENDTRY.
+  ENDMETHOD.
+
+ENDCLASS.
+
