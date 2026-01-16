@@ -1,0 +1,353 @@
+REPORT
+*&---------------------------------------------------------------------*
+*& Report ZMM_GRT_SNO_DELINK_STATUS
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT zmm_grt_sno_delink_status.
+************************************************************************
+*  Program Title       : Serial Number Delinking Report                *
+*  Author              : MDONBOSCOUST                                  *
+*  Date                : 05/05/2025                                    *
+*  Transport           : DEVK9A6TJG                                    *
+*  Description         : This program will display the changes logged  *
+*                        into log table.                               *
+*----------------------------------------------------------------------*
+* MODIFICATION HISTORY
+*
+*  SAP Change Request  : DEVK9XXXXX
+*  Change Driver       : Name
+*  Author              : Name (userid)
+*  Date                : MM/DD/YYYY
+*  Description         : Initial Development
+*  Requirement ID      : WRICEF ID/CR number
+*----------------------------------------------------------------------*
+************************************************************************
+*                         Include                                      *
+************************************************************************
+INCLUDE: zmm_grt_sno_delink_status_top,
+         zmm_grt_sno_delink_status_sel,
+         zmm_grt_sno_delink_status_def.
+
+************************************************************************
+*                         Start of Selection                           *
+************************************************************************
+START-OF-SELECTION.
+
+  AUTHORITY-CHECK OBJECT 'C_COCF_SRE'
+                FOR USER sy-uname
+                ID 'ACTVT'      FIELD '03'
+                ID 'EQUNR'      DUMMY.
+  IF sy-subrc IS INITIAL.
+
+    DATA(lo_report) = NEW lcl_delink_report(  ).
+    lo_report->get_data( ).
+
+    IF lo_report->has_data( ) = abap_true.
+      lo_report->display_data( ).
+    ELSE.
+      MESSAGE 'No data found for the given selection criteria.'(008) TYPE 'I'.
+    ENDIF.
+
+  ELSE.
+
+    MESSAGE i129(zsc1).
+    LEAVE LIST-PROCESSING.
+
+  ENDIF.
+
+INCLUDE – DATA DECLARATION
+ ************************************************************************
+*  Program Title       : Serial number delinking Report                *
+*  Author              : MDONBOSCOUST                             *
+*  Date                : 05/05/2025                                    *
+*  SAP Change Request  : DEVK9A6TJG                                    *
+*  Description         : This program will display the changes logged  *
+*                        into log table.                               *
+*----------------------------------------------------------------------*
+* MODIFICATION HISTORY
+*
+*  SAP Change Request  : N/A
+*  Change Driver       : Name
+*  Author              : Name (userid)
+*  Date                : MM/DD/YYYY
+*  Description         : Initial Development
+*  Requirement ID      : WRICEF ID/CR number
+*----------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Report
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Include          ZMM_GRT_SNO_DELINK_STATUS_TOP
+*&---------------------------------------------------------------------*
+*********************************************************************
+**                S T R U C T U R E                                **
+*********************************************************************
+TYPES: BEGIN OF gty_dl,
+         vbeln_vl    TYPE vbeln_vl, "Delivery
+         r_vbeln_vl  TYPE vbeln_vl, "Delivery
+         ebeln       TYPE ebeln,    "Purchasing document number
+         ebelp       TYPE ebelp,    "Item number of purchasing document
+         werks       TYPE werks_d,  "Plant
+         fw_vbeln_va TYPE vbeln_va, "Sales document
+         fw_posnr    TYPE posnr,    "Item number of the SO document
+         re_vbeln_va TYPE vbeln_va, "Sales document
+         re_posnr    TYPE posnr,    "Item number of the SO document
+         matnr       TYPE matnr,    "Material number
+         serialno    TYPE gernr,    "BOM Explosion number
+         equnr       TYPE equnr,    "Equipment Number
+         parnr_parvw TYPE char256,  "Partner(Partner Function)
+         kunnr       TYPE kunnr,    "Customer number
+         rrc_partner TYPE kunnr,    "customer number
+         date_va     TYPE sydatum,  "System Date
+         time        TYPE syuzeit,  "System Time
+         status      TYPE j_txt30,  "Object status
+         message     TYPE bapi_msg, "Message Text
+       END OF gty_dl.
+
+*********************************************************************
+**                    VARIABLES                                    **
+*********************************************************************
+
+DATA : gv_vbeln TYPE vbeln_va, "Delivery
+       gv_posnr TYPE posnr,    "Item number of SO document
+       gv_ebeln TYPE ebeln,    "Purchasing document number
+       gv_ebelp TYPE ebelp,    "Item number of purchasing document
+       gv_werks TYPE werks_d,  "Plant
+       gv_kunnr TYPE kunnr,    "Customer number
+       gv_date  TYPE sydatum,  "System date
+       gv_matnr TYPE matnr,    "Object status
+       gv_serno TYPE gernr.    "Message Text
+*********************************************************************
+**                    VARIABLE                                     **
+*********************************************************************
+DATA: lo_alv TYPE REF TO cl_salv_table. "Object declaration
+DATA: lo_functions TYPE REF TO cl_salv_functions. "ALV display
+DATA: lo_display TYPE REF TO cl_salv_display_settings. "ALV display
+
+INCLUDE – SELECTION SCREEN
+************************************************************************
+*  Program Title       : Serial number delinking report                *
+*  Author              : MDONBOSCOUST                              *
+*  Date                : 05/05/2025                                    *
+*  SAP Change Request  : DEVK9A6TJG                                    *
+*  Description         : This program will display the changes logged  *
+*                        into log table.                               *
+*----------------------------------------------------------------------*
+* MODIFICATION HISTORY
+*
+*  SAP Change Request  : DEVK9XXXXX
+*  Change Driver       : Name
+*  Author              : Name (userid)
+*  Date                : MM/DD/YYYY
+*  Description         : Initial Development
+*  Requirement ID      : WRICEF ID/CR number
+*----------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*& Report
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+
+*&---------------------------------------------------------------------*
+*& Include          ZMM_GRT_SNO_DELINK_STATUS_SEL
+*&---------------------------------------------------------------------*
+
+TABLES: zmm_grt_sno_dlst ##NEEDED.                               "Table declaration for custom table
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.    "Start of first selection screen block.
+
+SELECT-OPTIONS: s_vbeln FOR gv_vbeln  NO INTERVALS,              "Select-options for user input
+                s_posnr FOR gv_posnr  NO INTERVALS,
+                s_ebeln FOR gv_ebeln  NO INTERVALS,
+                s_ebelp FOR gv_ebelp  NO INTERVALS,
+                s_werks FOR gv_werks  NO INTERVALS,
+                s_kunnr FOR gv_kunnr  NO INTERVALS,
+                s_date FOR gv_date NO-EXTENSION,
+                s_matnr FOR gv_matnr  NO INTERVALS,
+                s_serno FOR gv_serno  NO INTERVALS .
+
+
+SELECTION-SCREEN END OF BLOCK b1.                                 "End of first block.
+
+INCLUDE – GET DATA 
+*&---------------------------------------------------------------------*
+*& Include          ZMM_GRT_SNO_DELINK_STATUS_DEF
+*&---------------------------------------------------------------------*
+CLASS lcl_delink_report DEFINITION ##CLASS_FINAL.
+  PUBLIC SECTION.
+    METHODS:
+      get_data,
+      has_data RETURNING VALUE(rv_has_data) TYPE abap_bool,
+      display_data.
+
+  PRIVATE SECTION.
+    DATA: gt_data  TYPE STANDARD TABLE OF gty_dl.
+ENDCLASS.
+
+
+CLASS lcl_delink_report IMPLEMENTATION.
+  METHOD get_data .
+
+    SELECT vbeln_vl,
+           r_vbeln_vl,
+           ebeln,
+           ebelp,
+           werks,
+           fw_vbeln_va,
+           fw_posnr,
+           re_vbeln_va,
+           re_posnr,
+           matnr,
+           serialno,
+           equnr,
+           parnr_parvw,
+           kunnr,
+           rrc_partner,
+           date_va,
+           time,
+           status,
+           message
+           INTO TABLE @gt_data
+           FROM zmm_grt_sno_dlst
+           WHERE ( fw_vbeln_va IN @s_vbeln OR re_vbeln_va IN @s_vbeln )
+           AND   ebeln       IN @s_ebeln
+           AND   ebelp       IN @s_ebelp
+           AND   werks       IN @s_werks
+           AND  ( fw_posnr   IN @s_posnr OR re_posnr IN @s_posnr )
+           AND   matnr       IN @s_matnr
+           AND   kunnr       IN @s_kunnr
+           AND   date_va     IN @s_date
+           AND   serialno    IN @s_serno.
+
+  ENDMETHOD.
+
+  METHOD has_data.
+    IF lines( gt_data ) > 0.
+      rv_has_data = abap_true.
+    ELSE.
+      rv_has_data = abap_false.
+    ENDIF.
+  ENDMETHOD.
+  METHOD display_data.
+
+    TRY.
+        cl_salv_table=>factory(
+          IMPORTING r_salv_table = lo_alv
+          CHANGING  t_table      = gt_data ).
+
+        lo_functions = lo_alv->get_functions( ).
+        lo_functions->set_all( abap_true ).
+
+        lo_display = lo_alv->get_display_settings( ).
+        lo_display->set_list_header( 'Serial number delink Process' ) ##NO_TEXT.
+        lo_display->set_striped_pattern( abap_true ).
+
+
+        lo_alv->get_columns( )->get_column('VBELN_VL')->set_short_text('Deli(IBD)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('VBELN_VL')->set_medium_text('Delivery(IBD)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('VBELN_VL')->set_long_text('Delivery(IBD)') ##NO_TEXT.
+
+        lo_alv->get_columns( )->get_column('VBELN_VL')->set_output_length( value = 10 ).
+
+        lo_alv->get_columns( )->get_column('R_VBELN_VL')->set_short_text('Deliv(RET)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('R_VBELN_VL')->set_medium_text('Delivery(Return)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('R_VBELN_VL')->set_long_text('Delivery(Return)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('R_VBELN_VL')->set_output_length( value = 10 ).
+
+        lo_alv->get_columns( )->get_column('EBELN')->set_short_text('Po.(STO)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('EBELN')->set_medium_text('Purch Doc.(STO)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('EBELN')->set_long_text('Purch Doc.(STO)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('EBELN')->set_output_length( value = 10 ).
+
+        lo_alv->get_columns( )->get_column('EBELP')->set_short_text('Item') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('EBELP')->set_medium_text('Item') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('EBELP')->set_long_text('Item') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('EBELP')->set_output_length( value = 5 ).
+
+        lo_alv->get_columns( )->get_column('WERKS')->set_short_text('Plant') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('WERKS')->set_medium_text('Plant') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('WERKS')->set_long_text('Plant') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('WERKS')->set_output_length( value = 5 ).
+
+        lo_alv->get_columns( )->get_column('FW_VBELN_VA')->set_short_text('SO(FWD)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('FW_VBELN_VA')->set_medium_text('Sales Doc.(Forward)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('FW_VBELN_VA')->set_long_text('Sales Doc.(Forward)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('FW_VBELN_VA')->set_output_length( value = 10 ).
+
+        lo_alv->get_columns( )->get_column('FW_POSNR')->set_short_text('Item') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('FW_POSNR')->set_medium_text('Item') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('FW_POSNR')->set_long_text('Item') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('FW_POSNR')->set_output_length( value = 6 ).
+
+        lo_alv->get_columns( )->get_column('RE_VBELN_VA')->set_short_text('SO(Return)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('RE_VBELN_VA')->set_medium_text('Sales Doc.(Return)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('RE_VBELN_VA')->set_long_text('Sales Doc.(Return)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('RE_VBELN_VA')->set_output_length( value = 10 ).
+
+        lo_alv->get_columns( )->get_column('RE_POSNR')->set_short_text('Item') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('RE_POSNR')->set_medium_text('Item') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('RE_POSNR')->set_long_text('Item') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('RE_POSNR')->set_output_length( value = 5 ).
+
+        lo_alv->get_columns( )->get_column('MATNR')->set_short_text('Material') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('MATNR')->set_long_text('Material Number') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('MATNR')->set_long_text('Material Number') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('MATNR')->set_output_length( value = 15 ).
+
+        lo_alv->get_columns( )->get_column('SERIALNO')->set_short_text('Serial NO') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('SERIALNO')->set_medium_text('Serial Number') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('SERIALNO')->set_long_text('Serial Number') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('SERIALNO')->set_output_length( value = 15 ).
+
+        lo_alv->get_columns( )->get_column('EQUNR')->set_short_text('Equipment') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('EQUNR')->set_medium_text('Equipment') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('EQUNR')->set_long_text('Equipment') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('EQUNR')->set_output_length( value = 18 ).
+
+        lo_alv->get_columns( )->get_column('PARNR_PARVW')->set_short_text('Partner') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('PARNR_PARVW')->set_medium_text('Partner(Function)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('PARNR_PARVW')->set_long_text('Partner(Function)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('PARNR_PARVW')->set_output_length( value = 20 ).
+
+        lo_alv->get_columns( )->get_column('KUNNR')->set_short_text('Cust NO') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('KUNNR')->set_medium_text('Customer No.') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('KUNNR')->set_long_text('Customer No.') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('KUNNR')->set_output_length( value = 10 ).
+
+        lo_alv->get_columns( )->get_column('RRC_PARTNER')->set_short_text('Ship-To') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('RRC_PARTNER')->set_medium_text('CustomerNo.(Ship-To)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('RRC_PARTNER')->set_long_text('Customer No.(Ship-To)') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('RRC_PARTNER')->set_output_length( value = 10 ).
+
+        lo_alv->get_columns( )->get_column('DATE_VA')->set_short_text('Date') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('DATE_VA')->set_medium_text('Date') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('DATE_VA')->set_long_text('Date') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('DATE_VA')->set_output_length( value = 10 ).
+
+        lo_alv->get_columns( )->get_column('TIME')->set_short_text('Time') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('TIME')->set_medium_text('Time') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('TIME')->set_long_text('Time') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('TIME')->set_output_length( value = 8 ).
+
+        lo_alv->get_columns( )->get_column('STATUS')->set_short_text('Status') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('STATUS')->set_medium_text('Status') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('STATUS')->set_long_text('Status') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('STATUS')->set_output_length( value = 20 ).
+
+        lo_alv->get_columns( )->get_column('MESSAGE')->set_short_text('Message') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('MESSAGE')->set_medium_text('Message') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('MESSAGE')->set_long_text('Message') ##NO_TEXT.
+        lo_alv->get_columns( )->get_column('MESSAGE')->set_output_length( value = 30 ).
+
+        lo_alv->display( ).
+      CATCH cx_salv_msg INTO DATA(lx_msg).
+        MESSAGE lx_msg->get_text( ) TYPE 'E'.
+      CATCH cx_salv_not_found INTO DATA(lx_not_found).
+        MESSAGE lx_not_found->get_text( ) TYPE 'E'.
+    ENDTRY.
+  ENDMETHOD.
+ENDCLASS.
+
