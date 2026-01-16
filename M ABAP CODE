@@ -1,0 +1,709 @@
+CLASS zcl_mm_ret_sernr_delink DEFINITION
+  PUBLIC
+  CREATE PRIVATE .
+
+  PUBLIC SECTION.
+
+    TYPES:
+      BEGIN OF ty_process_log,
+        msg_id TYPE sy-msgid,
+        msg_nr TYPE sy-msgno,
+        msg_ty TYPE sy-msgty,
+        msg_v1 TYPE sy-msgv1,
+        msg_v2 TYPE sy-msgv2,
+        msg_v3 TYPE sy-msgv3,
+        msg_v4 TYPE sy-msgv4,
+      END OF ty_process_log .
+    TYPES:
+      BEGIN OF ty_equi,
+        equnr TYPE equnr,
+        objnr TYPE j_objnr,
+        sernr TYPE gernr,
+        matnr TYPE matnr,
+        stat  TYPE j_status,
+        inact TYPE j_inact,
+      END OF ty_equi .
+
+    TYPES:
+      BEGIN OF ty_grt_sno_dlst,
+        mandt       TYPE mandt,
+        vbeln_vl    TYPE vbeln_vl,
+        r_vbeln_vl  TYPE vbeln_vl,
+        matnr       TYPE matnr,
+        serialno    TYPE gernr,
+        parnr_parvw TYPE char256,
+        ebeln       TYPE ebeln,
+        ebelp       TYPE ebelp,
+        werks       TYPE werks_d,
+        fw_vbeln_va TYPE vbeln_va,
+        fw_posnr    TYPE posnr,
+        re_vbeln_va TYPE vbeln_va,
+        re_posnr    TYPE posnr,
+        equnr       TYPE equnr,
+        kunnr       TYPE kunnr,
+        rrc_partner TYPE kunnr,
+        date_va     TYPE sydatum,
+        time        TYPE syuzeit,
+        status      TYPE j_txt30,
+        message     TYPE bapi_msg,
+      END OF ty_grt_sno_dlst.
+
+    TYPES: ty_msg_log         TYPE ty_grt_sno_dlst,
+           ty_mm_grt_sno_dlst TYPE zmm_grt_sno_dlst,
+           ty_equi_table      TYPE STANDARD TABLE OF ty_equi,
+           ty_msg_log_table   TYPE STANDARD TABLE OF ty_grt_sno_dlst.
+
+    CLASS-METHODS get_instance
+      IMPORTING
+        !iv_object_key         TYPE vbeln_vl
+      RETURNING
+        VALUE(ro_sernr_delink) TYPE REF TO zcl_mm_ret_sernr_delink .
+    METHODS get_data .
+    METHODS process_sernr_delink
+      IMPORTING
+        !im_equi TYPE ty_equi_table .
+    METHODS process_message
+      IMPORTING
+        !im_process_log TYPE ty_process_log .
+protected section.
+private section.
+
+  data MV_OBJECT_KEY type VBELN_VL .
+  class-data MO_SERNR_DELINK type ref to ZCL_MM_RET_SERNR_DELINK .
+  class-data MT_DELINK_LOG_MSG type TY_MSG_LOG_TABLE .
+
+  methods CONSTRUCTOR
+    importing
+      !IV_OBJECT_KEY type VBELN_VL .
+ENDCLASS.
+
+
+
+CLASS ZCL_MM_RET_SERNR_DELINK IMPLEMENTATION.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Private Method ZCL_MM_RET_SERNR_DELINK->CONSTRUCTOR
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_OBJECT_KEY                  TYPE        VBELN_VL
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  method CONSTRUCTOR.
+ " IV_OBJECT_KEY (input parameter) is assigned to the instance attribute MV_OBJECT_KEY
+
+    MV_OBJECT_KEY = IV_OBJECT_KEY.
+
+  endmethod.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_MM_RET_SERNR_DELINK->GET_DATA
+* +-------------------------------------------------------------------------------------------------+
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD get_data.
+  "===============================================================
+* Retrieve STO, serial number, equipment & child equipment data
+* Method used to fetch:
+* - STO header,Item (mv_object_key)
+* - Serial number(s)
+* - Primary equipment(s)
+* - Child equipment(s)
+*
+* @parameter mv_object_key | IBD key representing the STO (delivery/shipment) to process
+* @mt_delink_log_msg | Internal table populated with serial  and equipment detail entries
+  "===============================================================
+
+    DATA: ls_sno_dlst       TYPE ty_msg_log,
+          ls_process_log    TYPE ty_process_log,
+          lt_delink_log_msg TYPE ty_msg_log_table,
+          ls_final_del_log  LIKE LINE OF lt_delink_log_msg,
+          lt_equi_c         TYPE ty_equi_table,
+          ls_equi_c         TYPE ty_equi,
+
+          ls_grt_sno_dlst   TYPE ty_mm_grt_sno_dlst.
+
+    CLEAR: mt_delink_log_msg.
+
+    TRY.
+
+        SELECT DISTINCT ekko~purchasingdocument         AS ebeln,  "Purchasing Document Number
+                        ekkn~purchasingdocumentitem     AS ebelp,  "Item Number of Purchasing Document
+                        ekkn~salesdocument              AS vbeln,  "Sales Document
+                        ekkn~salesdocumentitem          AS vbelp,  "Item number of the SD document
+                        ekko~correspncexternalreference AS ihrez,  "Return SO Number
+                        ekko~correspncinternalreference AS unsez,  "OBD number
+                        ekpo~plant                      AS werks,  "Plant
+                        ekpo~material                   AS matnr   "Material
+        FROM zsc_cds_del_item  AS lips
+        INNER JOIN i_purchasingdocument AS ekko ON
+                   ekko~purchasingdocument = lips~vgbel
+        INNER JOIN i_purdocacctassinment AS ekkn ON
+                   ekkn~purchasingdocument = ekko~purchasingdocument
+        INNER JOIN i_purchasingdocumentitem AS ekpo ON
+                   ekpo~purchasingdocument = ekko~purchasingdocument
+        INNER JOIN i_salesdocumentitembasic AS vbap ON
+                   vbap~salesdocument = ekkn~salesdocument AND
+                   vbap~salesdocumentitem = ekkn~salesdocumentitem AND
+                   vbap~material = ekpo~material
+        WHERE  lips~vbeln = @mv_object_key INTO TABLE @DATA(lt_msg_log).
+        IF sy-subrc = 0.
+          "Step 2: Fetch serial Number And Material Number Details
+          SORT lt_msg_log BY matnr.
+          "Case 1.
+          SELECT FROM ser01 INNER JOIN objk ON ser01~obknr = objk~obknr
+                            FIELDS objk~sernr, objk~matnr, ser01~posnr WHERE lief_nr = @mv_object_key INTO TABLE @DATA(lt_ser).
+          IF sy-subrc = 0.
+*            * Do Nothing
+          ENDIF.
+          "Case 2.
+          DATA(ls_unsez) =  VALUE #( lt_msg_log[ 1 ]-unsez OPTIONAL ).
+          SELECT FROM ser01 INNER JOIN objk ON
+                      ser01~obknr = objk~obknr
+               FIELDS objk~sernr, objk~matnr, ser01~posnr WHERE lief_nr =  @ls_unsez
+               APPENDING TABLE @lt_ser.
+          IF lt_ser IS INITIAL.
+
+            DATA(ls_grt_sernr) = VALUE #( lt_msg_log[ 1 ] OPTIONAL ).
+
+            ls_grt_sno_dlst-vbeln_vl    = mv_object_key.
+            ls_grt_sno_dlst-r_vbeln_vl  = ls_grt_sernr-unsez.
+            ls_grt_sno_dlst-ebeln       = ls_grt_sernr-ebeln.
+            ls_grt_sno_dlst-werks       = ls_grt_sernr-werks.
+            ls_grt_sno_dlst-fw_vbeln_va = ls_grt_sernr-vbeln.
+            ls_grt_sno_dlst-re_vbeln_va = ls_grt_sernr-ihrez.
+            ls_grt_sno_dlst-time        = sy-uzeit.
+            ls_grt_sno_dlst-date_va     = sy-datum.
+            MESSAGE s127(zsc1) INTO ls_grt_sno_dlst-message.
+
+            SELECT vbeln_vl FROM zmm_grt_sno_dlst WHERE vbeln_vl = @mv_object_key INTO TABLE @DATA(lt_grt_sno_log).
+            IF sy-subrc = 0.
+              "Dlete the result to DB zmm_grt_sno_dlst.
+              DELETE FROM zmm_grt_sno_dlst WHERE vbeln_vl = ls_grt_sno_dlst-vbeln_vl AND
+                                                 r_vbeln_vl =  ls_grt_sno_dlst-r_vbeln_vl.
+            ENDIF.
+            "Insert the result to DB zmm_grt_sno_dlst.
+            INSERT  zmm_grt_sno_dlst FROM ls_grt_sno_dlst.
+
+            ls_process_log = VALUE #( msg_id = 'ZSC1' msg_nr = 127 msg_ty = 'E' msg_v1 = mv_object_key ).
+            me->process_message(
+                im_process_log = ls_process_log
+            ).
+            CLEAR ls_process_log.
+            RETURN.
+          ELSE.
+            DATA(lt_sernr) = lt_ser.
+            SORT lt_sernr BY sernr matnr posnr.
+            DELETE ADJACENT DUPLICATES FROM lt_sernr COMPARING sernr matnr posnr.
+          ENDIF.
+
+          "Get Customer Details.
+          DATA(ls_vbeln) = VALUE #( lt_msg_log[ 1 ]-vbeln OPTIONAL ).
+          SELECT kunnr, parvw FROM vbpa WHERE vbeln = @ls_vbeln
+                                             INTO TABLE @DATA(lt_customer).
+          IF sy-subrc = 0.
+* Do Nothing
+          ENDIF.
+
+          "Fill Message Log Details
+          IF lt_msg_log IS NOT INITIAL AND
+             lt_sernr     IS NOT INITIAL.
+            SORT lt_sernr BY matnr.
+            DATA(lt_ser_test) = lt_sernr.
+            LOOP AT lt_msg_log INTO DATA(ls_msg_log).
+              READ TABLE lt_ser_test WITH KEY matnr = ls_msg_log-matnr BINARY SEARCH INTO DATA(ls_sernr).
+              IF sy-subrc = 0.
+                LOOP AT lt_ser_test INTO DATA(ls_ser) FROM sy-tabix.
+                  IF ls_ser-matnr <> ls_msg_log-matnr OR ls_ser-posnr <> ls_sernr-posnr.
+                    EXIT.
+                  ENDIF.
+
+                  ls_sno_dlst-mandt       = sy-mandt.
+                  ls_sno_dlst-vbeln_vl    = mv_object_key.
+                  ls_sno_dlst-r_vbeln_vl  = ls_msg_log-unsez.
+                  ls_sno_dlst-ebeln       = ls_msg_log-ebeln.
+                  ls_sno_dlst-ebelp       = ls_msg_log-ebelp.
+                  ls_sno_dlst-werks       = ls_msg_log-werks.
+                  ls_sno_dlst-fw_vbeln_va = ls_msg_log-vbeln.
+                  ls_sno_dlst-fw_posnr    = ls_msg_log-vbelp.
+                  ls_sno_dlst-re_vbeln_va = ls_msg_log-ihrez.
+                  ls_sno_dlst-re_posnr    = ls_msg_log-vbelp.
+                  ls_sno_dlst-matnr       = ls_ser-matnr.
+                  ls_sno_dlst-serialno    = ls_ser-sernr.
+                  ls_sno_dlst-kunnr       = lt_customer[ parvw = 'AG' ]-kunnr.
+                  ls_sno_dlst-rrc_partner = lt_customer[ parvw = 'WE' ]-kunnr.
+                  APPEND ls_sno_dlst TO mt_delink_log_msg.
+                ENDLOOP.
+                DELETE lt_ser_test WHERE matnr = ls_sernr-matnr AND posnr = ls_sernr-posnr.
+              ENDIF.
+            ENDLOOP.
+          ENDIF.
+
+          "Step 3: Get The Equipement Details And Active Status.
+          IF mt_delink_log_msg IS NOT INITIAL.
+            SORT mt_delink_log_msg BY serialno matnr.
+
+            SELECT
+                 e~equipment             AS equnr,     " Child Equipment Number
+                 e~maintobjectinternalid AS objnr,     " Object number
+                 e~serialnumber          AS sernr,     " Serial Number
+                 e~material              AS matnr,     " Material Number
+                 j~statuscode            AS stat ,      " Object status
+                 j~statusisinactive      AS inact     " Indicator: Status Is Inactive
+             INTO TABLE @DATA(lt_equi)
+             FROM i_equipment AS e
+             INNER JOIN i_statusobjectstatusbasic AS j
+             ON j~statusobject = e~maintobjectinternalid
+             FOR ALL ENTRIES IN @mt_delink_log_msg
+             WHERE e~serialnumber = @mt_delink_log_msg-serialno
+             AND e~material = @mt_delink_log_msg-matnr. "#EC CI_NO_TRANSFORM
+            IF sy-subrc = 0.
+              "Get Child equipment details.
+              SELECT
+              a~equipment              AS equnr,     " Child Equipment Number
+              a~maintobjectinternalid  AS objnr,     " Object number
+              a~serialnumber           AS sernr,     " Serial Number
+              a~material               AS matnr,     " Material Number
+              b~superordinateequipment AS hequi,     " SuperordinateEquipment
+              j~statuscode             AS stat,      " Object status
+              j~statusisinactive       AS inact      " Indicator: Status Is Inactive
+              INTO TABLE @DATA(lt_equi2)
+              FROM i_equipment AS a
+              INNER JOIN i_equipmenttimeseg AS b ON a~equipment = b~equipment          " Get child equipment
+              INNER JOIN i_statusobjectstatusbasic AS j ON j~statusobject = a~maintobjectinternalid           " Status for child
+              FOR ALL ENTRIES IN @lt_equi
+              WHERE b~superordinateequipment = @lt_equi-equnr. "#EC CI_NO_TRANSFORM
+            ENDIF.
+
+            IF lt_equi2 IS NOT INITIAL.
+              SORT lt_equi2 BY sernr matnr hequi.
+              LOOP AT  mt_delink_log_msg ASSIGNING FIELD-SYMBOL(<fs_delink_log_msg>).
+                APPEND <fs_delink_log_msg> TO lt_delink_log_msg. "Parent serial No and Material Details.
+                DATA(lv_tabix1) = line_index( lt_equi[ sernr = <fs_delink_log_msg>-serialno
+                                                       matnr = <fs_delink_log_msg>-matnr ] ).
+                IF lv_tabix1 <> 0.
+                  READ TABLE lt_equi WITH KEY matnr = <fs_delink_log_msg>-matnr sernr = <fs_delink_log_msg>-serialno
+                                      INTO DATA(ls_equi).
+                  IF sy-subrc = 0.
+                    LOOP AT lt_equi INTO DATA(ls_equi1) WHERE matnr = ls_equi-matnr AND sernr = ls_equi-sernr .
+                      APPEND ls_equi1 TO lt_equi_c.
+                    ENDLOOP.
+
+                    LOOP AT lt_equi2 ASSIGNING FIELD-SYMBOL(<fs_equi2>) WHERE hequi = ls_equi-equnr.
+                      ls_equi_c-equnr = <fs_equi2>-equnr.
+                      ls_equi_c-objnr = <fs_equi2>-objnr.
+                      ls_equi_c-sernr = <fs_equi2>-sernr.
+                      ls_equi_c-matnr = <fs_equi2>-matnr.
+                      ls_equi_c-stat  = <fs_equi2>-stat.
+                      ls_equi_c-inact = <fs_equi2>-inact.
+*                      ls_equi_c-chgnr = <fs_equi2>-chgnr.
+                      APPEND ls_equi_c TO lt_equi_c.
+
+                      AT NEW equnr ##LOOP_AT_OK.
+
+                        ls_final_del_log-mandt       = <fs_delink_log_msg>-mandt.
+                        ls_final_del_log-vbeln_vl    = mv_object_key.
+                        ls_final_del_log-r_vbeln_vl  = <fs_delink_log_msg>-r_vbeln_vl.
+                        ls_final_del_log-ebeln       = <fs_delink_log_msg>-ebeln.
+                        ls_final_del_log-ebelp       = <fs_delink_log_msg>-ebelp.
+                        ls_final_del_log-werks       = <fs_delink_log_msg>-werks.
+                        ls_final_del_log-fw_vbeln_va = <fs_delink_log_msg>-fw_vbeln_va.
+                        ls_final_del_log-fw_posnr    = <fs_delink_log_msg>-fw_posnr.
+                        ls_final_del_log-re_vbeln_va = <fs_delink_log_msg>-re_vbeln_va.
+                        ls_final_del_log-re_posnr    = <fs_delink_log_msg>-re_posnr.
+                        ls_final_del_log-matnr       = <fs_equi2>-matnr.
+                        ls_final_del_log-serialno    = <fs_equi2>-sernr.
+                        ls_final_del_log-kunnr       = <fs_delink_log_msg>-kunnr.
+                        ls_final_del_log-rrc_partner = <fs_delink_log_msg>-rrc_partner.
+                        APPEND ls_final_del_log TO lt_delink_log_msg.
+
+                      ENDAT.
+                    ENDLOOP.
+                  ENDIF.
+                ENDIF.
+              ENDLOOP.
+            ENDIF.
+
+            lt_equi = COND #( WHEN lt_equi_c IS NOT INITIAL
+                                 THEN lt_equi_c ELSE
+                                 lt_equi ).
+            mt_delink_log_msg =  COND #( WHEN  lt_delink_log_msg IS NOT INITIAL
+                                 THEN lt_delink_log_msg ELSE
+                                 mt_delink_log_msg ).
+
+            SORT lt_equi BY sernr matnr.
+            SORT mt_delink_log_msg BY serialno matnr.
+            IF lt_equi IS NOT INITIAL.
+              "Method called to delink the serial number and material for given equipment list.
+              process_sernr_delink( im_equi = lt_equi  ).
+            ENDIF.
+
+          ENDIF.
+
+        ENDIF.
+      CATCH cx_sy_itab_line_not_found.
+
+    ENDTRY.
+
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Static Public Method ZCL_MM_RET_SERNR_DELINK=>GET_INSTANCE
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IV_OBJECT_KEY                  TYPE        VBELN_VL
+* | [<-()] RO_SERNR_DELINK                TYPE REF TO ZCL_MM_RET_SERNR_DELINK
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD get_instance.
+"===============================================================
+* Get or create singleton instance
+* Method used to create a ZCL_MM_RET_SERNR_DELINK instance
+* @parameter iv_object_key | Key for instantiation
+* @return ro_sernr_delink  | A reference to the singleton instance
+"===============================================================
+
+    IF iv_object_key IS NOT INITIAL.
+
+      ro_sernr_delink = COND #( WHEN mo_sernr_delink IS NOT BOUND
+                                THEN NEW #( iv_object_key )
+                                ELSE mo_sernr_delink ).
+
+    ENDIF.
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_MM_RET_SERNR_DELINK->PROCESS_MESSAGE
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IM_PROCESS_LOG                 TYPE        TY_PROCESS_LOG
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD process_message.
+"===============================================================
+* shorttext:- Log processing message into NAST output protocol
+* Method called to:
+* - Validate and log a processing result message based on IM_PROCESS_LOG
+* - Update the associated output protocol in NAST via NAST_PROTOCOL_UPDATE FM
+*
+* @parameter im_process_log | Structure containing message ID, number, type, and variables
+* @return none              | Resulting message written to NAST protocol log
+"===============================================================
+    IF im_process_log-msg_id IS NOT INITIAL AND
+       im_process_log-msg_nr IS NOT INITIAL AND
+       im_process_log-msg_ty IS NOT INITIAL.
+
+      CALL FUNCTION 'NAST_PROTOCOL_UPDATE'
+        EXPORTING
+          msg_arbgb              = im_process_log-msg_id
+          msg_nr                 = im_process_log-msg_nr
+          msg_ty                 = im_process_log-msg_ty
+          msg_v1                 = im_process_log-msg_v1
+          msg_v2                 = im_process_log-msg_v2
+          msg_v3                 = im_process_log-msg_v3
+          msg_v4                 = im_process_log-msg_v4
+        EXCEPTIONS
+          message_type_not_valid = 1
+          no_sy_message          = 2
+          OTHERS                 = 3.
+      IF sy-subrc <> 0.
+*     Implement suitable error handling here
+      ENDIF.
+    ENDIF.
+
+  ENDMETHOD.
+
+
+* <SIGNATURE>---------------------------------------------------------------------------------------+
+* | Instance Public Method ZCL_MM_RET_SERNR_DELINK->PROCESS_SERNR_DELINK
+* +-------------------------------------------------------------------------------------------------+
+* | [--->] IM_EQUI                        TYPE        TY_EQUI_TABLE
+* +--------------------------------------------------------------------------------------</SIGNATURE>
+  METHOD process_sernr_delink.
+  "===============================================================
+* shorttext :- Delink serial number, material & partner functions, and persist results.
+* Method called to:
+* - Remove (delink) the serial number, associated material, and partner function
+*   assignments for each equipment in the IM_EQUI table
+* - Update or insert results into the database table ZMM_GRT_SNO_DLST
+*
+* @parameter im_equi          | Internal table of equipment entries (matnr, sernr, status)
+* @parameter mt_delink_log_msg| Input log entries for delink processing
+* @return none                | Results written into ZMM_GRT_SNO_DLST (insert/update)
+  "===============================================================
+
+    CONSTANTS: lc_i0099 TYPE j_status   VALUE 'I0099',
+               lc_e0001 TYPE j_status   VALUE 'E0001',
+               lc_e0019 TYPE j_status   VALUE 'E0019'.
+
+    DATA: lv_equnr           TYPE equnr,
+          lv_objnr           TYPE jsto-objnr,
+          lv_flag            TYPE abap_bool,
+          lv_staus_flag      TYPE abap_bool VALUE abap_false,
+          ls_status          TYPE jstat,
+          ls_process_log     TYPE ty_process_log,
+          ls_fail_log        TYPE ty_process_log,
+          ls_mm_grt_sno_dlst TYPE ty_mm_grt_sno_dlst,
+
+          lt_status          TYPE TABLE OF jstat,
+          lt_ihpavb          TYPE STANDARD TABLE OF ihpavb,
+          lt_sno_insert      TYPE STANDARD TABLE OF ty_mm_grt_sno_dlst,
+          lt_sno_update      TYPE STANDARD TABLE OF ty_mm_grt_sno_dlst.
+
+    SELECT  mandt,
+            vbeln_vl,
+            r_vbeln_vl,
+            ebeln,
+            ebelp,
+            werks,
+            fw_vbeln_va,
+            fw_posnr,
+            re_vbeln_va,
+            re_posnr,
+            matnr,
+            serialno,
+            equnr,
+            kunnr,
+            rrc_partner,
+            date_va,
+            time,
+            status,
+            message FROM zmm_grt_sno_dlst INTO TABLE @DATA(it_msg_log) FOR ALL ENTRIES IN @mt_delink_log_msg
+                                           WHERE vbeln_vl = @mv_object_key AND
+                                                 ebeln = @mt_delink_log_msg-ebeln AND
+                                                 ebelp = @mt_delink_log_msg-ebelp AND
+                                                 serialno = @mt_delink_log_msg-serialno AND
+                                                 matnr =  @mt_delink_log_msg-matnr.
+    IF sy-subrc = 0.
+
+    ENDIF.
+
+    CLEAR: ls_status, lt_status .
+    SORT mt_delink_log_msg BY serialno matnr .
+
+    IF mt_delink_log_msg IS NOT INITIAL.
+
+      LOOP AT mt_delink_log_msg ASSIGNING FIELD-SYMBOL(<fs_mt_delink_log_msg>). "#EC CI_IMUD_NESTED
+        "Check the serial number and material present for the equipment.
+        "And update/Insert to table zmm_grt_sno_dlst.
+        IF NOT line_exists( im_equi[ matnr = <fs_mt_delink_log_msg>-matnr sernr = <fs_mt_delink_log_msg>-serialno ] ). "sy-subrc <> 0.
+          ls_mm_grt_sno_dlst = CORRESPONDING #( <fs_mt_delink_log_msg> ).
+          MESSAGE s137(is) WITH <fs_mt_delink_log_msg>-serialno <fs_mt_delink_log_msg>-matnr INTO ls_mm_grt_sno_dlst-message.
+          IF line_exists( it_msg_log[ serialno = <fs_mt_delink_log_msg>-serialno matnr = <fs_mt_delink_log_msg>-matnr  ] ).
+            APPEND ls_mm_grt_sno_dlst TO lt_sno_update.
+          ELSE.
+            APPEND ls_mm_grt_sno_dlst TO lt_sno_insert.
+          ENDIF.
+          CLEAR ls_mm_grt_sno_dlst.
+        ENDIF.
+
+        DATA(lv_tabix) = line_index( im_equi[ sernr = <fs_mt_delink_log_msg>-serialno
+                                              matnr = <fs_mt_delink_log_msg>-matnr ] ).
+        IF lv_tabix NE 0.
+          "Add the Status, Indicator( Active/Inactive )of equipment to lt_status
+          LOOP AT im_equi INTO DATA(ls_equi) FROM lv_tabix  .
+            IF ls_equi-sernr = <fs_mt_delink_log_msg>-serialno AND
+               ls_equi-matnr = <fs_mt_delink_log_msg>-matnr .
+              IF NOT ( ls_equi-stat EQ lc_i0099
+                    OR ls_equi-stat EQ lc_e0001
+                    OR ls_equi-stat EQ lc_e0019  ).
+                IF ls_equi-inact = abap_false.
+                  ls_status-stat = ls_equi-stat.
+                  ls_status-inact = abap_true.
+                  APPEND ls_status TO lt_status.
+                  CLEAR ls_status.
+                  lv_flag = abap_true.
+                ENDIF.
+              ENDIF.
+
+              lv_equnr  = ls_equi-equnr.
+              lv_objnr  = ls_equi-objnr.
+            ELSE.
+              EXIT.
+            ENDIF.
+
+          ENDLOOP.
+          IF lv_flag IS INITIAL.
+            IF NOT line_exists( im_equi[ stat = lc_i0099 inact = abap_false ] )
+              OR NOT line_exists( im_equi[ stat = lc_e0001 inact = abap_false ] )
+              OR NOT line_exists( im_equi[ stat = lc_e0019 inact = abap_false ] ).
+              lv_flag = abap_true.
+            ENDIF.
+          ENDIF.
+          ls_status-stat = lc_i0099.
+          APPEND ls_status TO lt_status.
+          CLEAR ls_status.
+          ls_status-stat = lc_e0001.
+          APPEND ls_status TO lt_status.
+          CLEAR ls_status.
+          ls_status-stat = lc_e0019.
+          APPEND ls_status TO lt_status.
+          CLEAR ls_status.
+
+*>>Check The Serial Number Is Already Dilinked.
+          CALL FUNCTION 'PM_PARTNER_GET'
+            EXPORTING
+              objnr    = lv_objnr
+            TABLES
+              ihpa_tab = lt_ihpavb.
+          IF lv_flag IS INITIAL AND lt_ihpavb IS INITIAL.
+            ls_process_log = VALUE #( msg_id = 'ZSC1' msg_nr = 124 msg_ty = 'S' msg_v1 = <fs_mt_delink_log_msg>-matnr ).
+            AT END OF matnr.
+              me->process_message( im_process_log = ls_process_log ).
+              CLEAR ls_process_log.
+            ENDAT.
+          ENDIF.
+
+          IF lv_flag = abap_true OR lt_ihpavb IS NOT INITIAL.
+
+            <fs_mt_delink_log_msg>-equnr = lv_equnr.
+            <fs_mt_delink_log_msg>-date_va = sy-datum.
+            <fs_mt_delink_log_msg>-mandt = sy-mandt.
+            <fs_mt_delink_log_msg>-time = sy-uzeit.
+
+
+            CALL FUNCTION 'DEQUEUE_EIEQUI'
+              EXPORTING
+                mode_equi = 'E'
+                mandt     = sy-mandt
+                equnr     = lv_equnr
+                x_equnr   = ' '
+                _scope    = '3'
+                _synchron = ' '
+                _collect  = ' '. ##FM_SUBRC_OK
+            IF sy-subrc = 0.
+              "Change equipment number status
+              CALL FUNCTION 'STATUS_CHANGE_INTERN_VB'
+                EXPORTING
+                  objnr  = lv_objnr
+                TABLES
+                  status = lt_status. ##FM_SUBRC_OK
+              IF sy-subrc = 0.
+
+                IF sy-subrc IS INITIAL AND lt_ihpavb IS NOT INITIAL.
+
+                  LOOP AT lt_ihpavb ASSIGNING FIELD-SYMBOL(<fs_ihpavb>) .
+                    <fs_ihpavb>-updkz = 'D'.
+
+                    IF <fs_mt_delink_log_msg>-parnr_parvw IS INITIAL.
+                      <fs_mt_delink_log_msg>-parnr_parvw = |{ <fs_ihpavb>-parnr }({ <fs_ihpavb>-parvw })|.
+                    ELSEIF <fs_mt_delink_log_msg>-parnr_parvw IS NOT INITIAL AND <fs_ihpavb>-parnr IS NOT INITIAL.
+                      <fs_mt_delink_log_msg>-parnr_parvw = <fs_mt_delink_log_msg>-parnr_parvw && ',' &&  |{ <fs_ihpavb>-parnr }({ <fs_ihpavb>-parvw })|.
+                    ENDIF.
+                  ENDLOOP.
+
+                  UNASSIGN <fs_ihpavb>.
+
+                  CALL FUNCTION 'PM_PARTNER_UPDATE'
+                    TABLES
+                      fxihpa = lt_ihpavb.
+
+                ENDIF.
+
+
+                <fs_mt_delink_log_msg>-status   = 'AVLB-INIT-INI'.
+                MESSAGE s123(zsc1) INTO <fs_mt_delink_log_msg>-message.
+                IF line_exists( it_msg_log[ serialno = <fs_mt_delink_log_msg>-serialno matnr = <fs_mt_delink_log_msg>-matnr  ] ).
+                  ls_mm_grt_sno_dlst = CORRESPONDING #( <fs_mt_delink_log_msg> ).
+                  APPEND ls_mm_grt_sno_dlst TO lt_sno_update.
+                ELSE.
+                  ls_mm_grt_sno_dlst = CORRESPONDING #( <fs_mt_delink_log_msg> ).
+                  APPEND ls_mm_grt_sno_dlst TO lt_sno_insert.
+                ENDIF.
+
+                AT END OF matnr.
+                  IF lv_staus_flag = abap_false.
+                    ls_process_log = VALUE #( msg_id = 'ZSC1' msg_nr = 128 msg_ty = 'S' msg_v1 = <fs_mt_delink_log_msg>-matnr ).
+                    me->process_message( im_process_log = ls_process_log ).
+                  ELSE.
+                    ls_process_log = VALUE #( msg_id = 'ZSC1' msg_nr = 126 msg_ty = 'E' ).
+                    me->process_message( im_process_log = ls_process_log ).
+
+                    me->process_message( im_process_log = ls_fail_log ).
+                  ENDIF.
+
+                  CLEAR lv_staus_flag.
+                  CLEAR ls_process_log.
+                  CLEAR ls_fail_log.
+                ENDAT.
+
+
+                " Unlock the Equipment after changing it.
+                CALL FUNCTION 'EQUIPMENT_UNLOCK'
+                  EXPORTING
+                    equi_no        = lv_equnr
+                  EXCEPTIONS
+                    equi_not_found = 1
+                    lock_failure   = 2
+                    OTHERS         = 3.
+                IF sy-subrc <> 0.
+                  ls_process_log = VALUE #( msg_id = sy-msgid msg_nr = sy-msgno msg_ty = sy-msgno
+                                            msg_v1 = sy-msgv1 msg_v2 = sy-msgv2 msg_v3 = sy-msgv3
+                                            msg_v4 = sy-msgv4 ).
+                  AT END OF matnr.
+                    me->process_message( im_process_log = ls_process_log ).
+                    CLEAR ls_process_log.
+                    CLEAR lv_staus_flag.
+                  ENDAT.
+
+                ENDIF.
+
+              ELSE.
+                "If the status for equipment is not changed.
+                MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4
+                                                        INTO <fs_mt_delink_log_msg>-message.
+                IF line_exists( it_msg_log[ serialno = <fs_mt_delink_log_msg>-serialno matnr = <fs_mt_delink_log_msg>-matnr  ] ).
+                  ls_mm_grt_sno_dlst = CORRESPONDING #( <fs_mt_delink_log_msg> ).
+                  APPEND ls_mm_grt_sno_dlst TO lt_sno_update.
+                ELSE.
+                  ls_mm_grt_sno_dlst = CORRESPONDING #( <fs_mt_delink_log_msg> ).
+                  APPEND ls_mm_grt_sno_dlst TO lt_sno_insert.
+                ENDIF.
+
+                lv_staus_flag = abap_true.
+
+                ls_fail_log = VALUE #( msg_id = sy-msgid msg_nr = sy-msgno msg_ty = sy-msgno
+                                          msg_v1 = sy-msgv1 msg_v2 = sy-msgv2 msg_v3 = sy-msgv3
+                                          msg_v4 = sy-msgv4 ).
+                AT END OF matnr.
+
+                  ls_process_log = VALUE #( msg_id = 'ZSC1' msg_nr = 126 msg_ty = 'E' ).
+                  me->process_message( im_process_log = ls_process_log ).
+
+                  me->process_message( im_process_log = ls_fail_log ).
+
+                  CLEAR ls_process_log.
+                  CLEAR lv_staus_flag.
+                  CLEAR ls_fail_log.
+                ENDAT.
+              ENDIF.
+
+            ELSE.
+
+              ls_process_log = VALUE #( msg_id = sy-msgid msg_nr = sy-msgno msg_ty = sy-msgno
+                                            msg_v1 = sy-msgv1 msg_v2 = sy-msgv2 msg_v3 = sy-msgv3
+                                            msg_v4 = sy-msgv4 ).
+              AT END OF matnr.
+                me->process_message( im_process_log = ls_process_log ).
+                CLEAR ls_process_log.
+                CLEAR lv_staus_flag.
+              ENDAT.
+            ENDIF.
+            CLEAR lv_flag.
+          ENDIF.
+        ENDIF.
+        CLEAR lt_status.
+      ENDLOOP.
+
+      UNASSIGN <fs_mt_delink_log_msg>.
+
+      IF lt_sno_insert IS NOT INITIAL.
+        "Insert the result to DB zmm_grt_sno_dlst.
+        INSERT  zmm_grt_sno_dlst FROM TABLE lt_sno_insert.
+      ENDIF.
+
+      IF lt_sno_update IS NOT INITIAL.
+        "Update the result to DB zmm_grt_sno_dlst.
+        UPDATE zmm_grt_sno_dlst FROM TABLE lt_sno_update.
+      ENDIF.
+
+    ENDIF.
+
+  ENDMETHOD.
+ENDCLASS.
